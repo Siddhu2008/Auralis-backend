@@ -14,7 +14,7 @@ def transcribe_audio(file_path):
     
     try:
         # gemini-1.5-flash is good for multimodal (audio)
-        model = genai.GenerativeModel('gemini-flash-latest')
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
         # Upload the file
         # Note: For production, we should handle file upload/lifecycle properly.

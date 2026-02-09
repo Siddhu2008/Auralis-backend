@@ -7,6 +7,7 @@ from utils.transcriber import transcribe_audio
 from utils.summarizer import summarize_text
 from models.meeting import create_meeting
 from utils.ai_response import generate_avatar_chat
+from datetime import datetime
 
 # In-memory room tracking
 # rooms[room_id] = [user_sid, ...]
@@ -16,6 +17,9 @@ room_hosts = {}
 
 # Audio buffers: room_audio_buffers[room_id] = [byte_chunk, ...]
 room_audio_buffers = {}
+
+# Live Transcripts: live_transcripts[room_id] = [text_chunk, ...]
+live_transcripts = {}
 
 def register_socket_events(socketio):
     @socketio.on('connect')
@@ -50,42 +54,41 @@ def register_socket_events(socketio):
 
     @socketio.on('join_room')
     def handle_join_room(data):
-        room = data['room']
+        room = data.get('room')
+        if not room: return
         
         # Check if room exists and has users
         if room not in rooms or not rooms[room]:
-            # Create/Initialize Room
+            # Initializing Room as Host
             rooms[room] = []
-            room_hosts[room] = request.sid # First joiner is host
-            room_audio_buffers[room] = [] # Initialize buffer
+            room_hosts[room] = request.sid
+            room_audio_buffers[room] = []
+            live_transcripts[room] = [] # Initialize transcript buffer
             
             join_room(room)
             rooms[room].append(request.sid)
             
-            emit('user_joined', {'sid': request.sid}, to=room, include_self=False)
-            emit('role_assigned', {'role': 'host'}) # Explicitly tell client they are host
-            print(f"Room {room} created/initialized by Host {request.sid}")
+            emit('role_assigned', {'role': 'host'})
+            print(f"Room {room} initialized by Host {request.sid}")
             return
 
-        # If room exists and has a host
+        # If room exists, check if user is already in it (e.g. refresh)
+        if request.sid in rooms[room]:
+            emit('room_joined_success', {'role': 'host' if room_hosts.get(room) == request.sid else 'participant'})
+            return
+
+        # If joining as guest, notify host
         host_sid = room_hosts.get(room)
-        
         if host_sid:
-            # Check if this user is re-joining (e.g. refresh) - naive check
-            # For now, treat all new socket connections as new users requiring approval
-            
-            # Notify Host
             emit('entry_requested', {'sid': request.sid}, to=host_sid)
-            print(f"User {request.sid} asking to join Room {room}. Notification sent to Host {host_sid}")
+            print(f"User {request.sid} requesting entry to Room {room}. Notifying Host {host_sid}")
         else:
-            # Fallback: Room exists but no host?? (Should be covered by disconnect logic, but just in case)
-            # Make this user the host
+            # Host missing but users exist? Make this user host.
             room_hosts[room] = request.sid
             join_room(room)
             rooms[room].append(request.sid)
             emit('role_assigned', {'role': 'host'})
-            emit('user_joined', {'sid': request.sid}, to=room, include_self=False)
-            print(f"Room {room} recovered. Host assigned to {request.sid}")
+            print(f"Host recovered for Room {room}: {request.sid}")
 
     @socketio.on('approve_entry')
     def handle_approve_entry(data):
@@ -94,29 +97,24 @@ def register_socket_events(socketio):
         
         if not target_sid or not room: return
 
-        current_host = room_hosts.get(room)
-        
-        # Verify request is from host
-        if current_host == request.sid:
-            # Force join target
+        # Verify requester is the host
+        if room_hosts.get(room) == request.sid:
             join_room(room, sid=target_sid) 
             
-            # Ensure lists are updated
             if room not in rooms: rooms[room] = []
-            if request.sid not in rooms[room]: rooms[room].append(request.sid)
             if target_sid not in rooms[room]: rooms[room].append(target_sid)
             
-            # Notify everyone
-            emit('user_joined', {'sid': target_sid}, to=room)
-            
-            # Send list of users to the new person
-            existing_users = [u for u in rooms[room] if u != target_sid]
-            emit('all_users', {'users': existing_users}, to=target_sid)
+            # 1. Notify the new joiner they are in
             emit('room_joined_success', {'role': 'participant'}, to=target_sid)
             
-            print(f"Host {request.sid} approved {target_sid} for Room {room}")
-        else:
-            print(f"Unauthorized approve attempt by {request.sid} for room {room}")
+            # 2. Tell the new joiner about everyone else
+            existing_users = [u for u in rooms[room] if u != target_sid]
+            emit('all_users', {'users': existing_users}, to=target_sid)
+            
+            # 3. Tell everyone else about the new joiner
+            emit('user_joined', {'sid': target_sid}, to=room, include_self=False)
+            
+            print(f"Host {request.sid} admitted {target_sid} to Room {room}")
 
     @socketio.on('deny_entry')
     def handle_deny_entry(data):
@@ -143,69 +141,78 @@ def register_socket_events(socketio):
             # For this MVP, we just append to the room's single buffer.
             room_audio_buffers[room].append(chunk)
 
+    @socketio.on('transcript_update')
+    def handle_transcript_update(data):
+        room = data.get('room')
+        text = data.get('text')
+        if room and text:
+            if room not in live_transcripts:
+                live_transcripts[room] = []
+            live_transcripts[room].append(text)
+            # print(f"Transcript update for {room}: {text}")
+
     @socketio.on('end_meeting')
     def handle_end_meeting(data):
         room = data.get('room')
-        user_id = data.get('user_id') # Identify who is saving it
+        user_id = data.get('user_id') 
         title = data.get('title', 'Untitled Meeting')
         
-        if not room or room not in room_audio_buffers:
-            print(f"No audio buffer for room {room}")
-            return
-
         print(f"Processing meeting {room}...")
         emit('processing_status', {'status': 'processing'}, to=room)
         
-        # Save Audio to Temp WAV
-        chunks = room_audio_buffers[room]
-        if not chunks:
-            print("Audio buffer empty.")
+        transcript_text = ""
+        
+        # Prioritize Live Transcript
+        if room in live_transcripts and live_transcripts[room]:
+            print("Using Live Transcript for summary.")
+            transcript_text = " ".join(live_transcripts[room])
+        
+        # Fallback to Audio Buffer if Live Transcript is empty
+        if not transcript_text and room in room_audio_buffers and room_audio_buffers[room]:
+            print("Live Transcript empty. Falling back to Audio Buffer...")
+            chunks = room_audio_buffers[room]
+            temp_filename = f"temp_{uuid.uuid4()}.wav"
+            try:
+                with open(temp_filename, 'wb') as f:
+                    for chunk in chunks:
+                        f.write(chunk)
+                transcript_result = transcribe_audio(temp_filename)
+                transcript_text = transcript_result.get('text', '')
+            except Exception as e:
+                print(f"Audio Buffer Transcription Error: {e}")
+            finally:
+                if os.path.exists(temp_filename):
+                    os.remove(temp_filename)
+
+        if not transcript_text:
+            print("No content to summarize.")
+            emit('processing_status', {'status': 'completed', 'summary': "No content recorded."}, to=room)
             return
 
-        temp_filename = f"temp_{uuid.uuid4()}.wav"
+        # Summarize
         try:
-            # Assuming incoming data is suitable for wave write (e.g. PCM blob)
-            # If the frontend sends a Blob/File, we might need to write binary.
-            with open(temp_filename, 'wb') as f:
-                for chunk in chunks:
-                    f.write(chunk)
-            
-            # Verify/Fix WAV header if needed. 
-            # If frontend sends raw PCM, we need `wave` module to write header.
-            # If frontend sends WebM/WAV file chunks, we just concatenated them.
-            # Start with Assuming Frontend sends a valid WAV or we use ffmpeg later.
-            # For this step, let's assume we pass the file to transcriber.
-
-            # Transcribe
-            transcript_result = transcribe_audio(temp_filename)
-            transcript_text = transcript_result.get('text', '')
-            
-            # Summarize
             summary_text = summarize_text(transcript_text)
             
             # Save to DB
             if user_id:
                create_meeting(user_id, room, title, transcript_text, summary_text)
 
-            # Add to Digital Twin Memory (Vector Store)
+            # Add to Vector Store
             try:
                 from utils.vector_store import vector_store
-                print(f"Indexing meeting {room} into Vector Store...")
-                vector_store.add_meeting(room, transcript_text, metadata={'title': title, 'date': str(uuid.uuid4())}) # simplified date
+                vector_store.add_meeting(room, transcript_text, metadata={'title': title, 'date': str(uuid.uuid4())})
             except Exception as vs_e:
                 print(f"Vector Store Indexing Error: {vs_e}")
             
             emit('processing_status', {'status': 'completed', 'summary': summary_text}, to=room)
             
-            # Clear buffer
-            room_audio_buffers[room] = []
+            # Clear buffers
+            if room in room_audio_buffers: room_audio_buffers[room] = []
+            if room in live_transcripts: live_transcripts[room] = []
             
         except Exception as e:
             print(f"Error processing meeting: {e}")
             emit('processing_status', {'status': 'error', 'error': str(e)}, to=room)
-        finally:
-            if os.path.exists(temp_filename):
-                os.remove(temp_filename)
 
     # Signaling
     @socketio.on('offer')
@@ -248,8 +255,10 @@ def register_socket_events(socketio):
         room = data.get('room')
         message = data.get('message')
         
+        
         # Generate Response
-        response = generate_avatar_chat(message)
+        transcript = " ".join(live_transcripts.get(room, []))
+        response = generate_avatar_chat(message, transcript=transcript)
         
         emit('chat_message', {
             'sender': 'Auralis_AI',
@@ -272,7 +281,8 @@ def register_socket_events(socketio):
         
         # Check for trigger
         if "@ai" in message.lower() or "auralis" in message.lower():
-            response = generate_avatar_chat(message)
+            transcript = " ".join(live_transcripts.get(room, []))
+            response = generate_avatar_chat(message, transcript=transcript)
             emit('chat_message', {
                 'sender': 'Auralis_AI',
                 'message': response,

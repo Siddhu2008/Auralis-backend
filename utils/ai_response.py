@@ -36,7 +36,7 @@ def generate_answer(context_chunks, question):
         # Fallback for testing
         return "[Mock Answer] Based on the context, the budget is $50,000. (Generated because API call failed)."
 
-def generate_avatar_chat(message, history=[]):
+def generate_avatar_chat(message, history=[], transcript=""):
     """
     Generates a response for the AI Avatar during a live meeting.
     """
@@ -51,14 +51,17 @@ def generate_avatar_chat(message, history=[]):
     Your tone is professional, concise, and collaborative.
     You assist with taking notes, answering questions, and providing insights.
     
+    Meeting Context so far:
+    {transcript[-2000:] if transcript else 'No transcript yet.'}
+    
     Last Message: {message}
     Conversation Context: {history[-5:] if history else 'None'}
     
-    Response (concise):
+    Response (concise, do not repeat the transcript):
     """
     
     try:
-        model = genai.GenerativeModel('gemini-flash-latest')
+        model = genai.GenerativeModel('gemini-1.5-flash')
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
