@@ -9,16 +9,12 @@ from models.meeting import create_meeting
 from utils.ai_response import generate_avatar_chat
 from datetime import datetime
 
-# In-memory room tracking
-# rooms[room_id] = [user_sid, ...]
+# Room User Details: room_user_details[room_id][sid] = {'name': 'John Doe', ...}
+room_user_details = {}
 rooms = {}
-# room_hosts[room_id] = host_sid
 room_hosts = {}
-
-# Audio buffers: room_audio_buffers[room_id] = [byte_chunk, ...]
+room_host_ids = {} # NEW: Track host user_id
 room_audio_buffers = {}
-
-# Live Transcripts: live_transcripts[room_id] = [text_chunk, ...]
 live_transcripts = {}
 
 def register_socket_events(socketio):
@@ -34,7 +30,14 @@ def register_socket_events(socketio):
             users = rooms[room]
             if request.sid in users:
                 users.remove(request.sid)
-                emit('user_left', {'sid': request.sid}, to=room)
+                
+                # Create user_left payload
+                left_payload = {'sid': request.sid}
+                if room in room_user_details and request.sid in room_user_details[room]:
+                   left_payload['name'] = room_user_details[room][request.sid].get('name', 'Unknown')
+                   del room_user_details[room][request.sid]
+
+                emit('user_left', left_payload, to=room)
                 
                 # Logic to reassign host or cleanup
                 if room in room_hosts and room_hosts[room] == request.sid:
@@ -45,50 +48,139 @@ def register_socket_events(socketio):
                         emit('role_assigned', {'role': 'host'}, to=new_host) # Notify new host
                         print(f"Host left. New host for {room} is {new_host}")
                     else:
-                        # Room empty
+                        # Room empty of connected users
+                        # We keep room_hosts[room] as None but keep the key to indicate it exists?
+                        # No, let's keep it simple.
                         del room_hosts[room]
-                        del rooms[room] # Clean up empty room
+                        # CRITICAL: Keep rooms[room] as [] instead of deleting it
+                        # This avoids is_empty_room = True for the next guest
+                        rooms[room] = [] 
+                        
                         if room in room_audio_buffers:
                             del room_audio_buffers[room]
-                        print(f"Room {room} is now empty and deleted.")
+                        
+                        # Only delete user details if NO ONE is left (including waiting guests)
+                        if room in room_user_details:
+                            if not room_user_details[room]:
+                                del room_user_details[room]
+                                # CRITICAL: We NO LONGER delete room_host_ids here.
+                                # This ensures the session owner is remembered for reclamation.
+                                del rooms[room] 
+                                print(f"Room {room} logic-cleared but host-id preserved for return.")
+                            else:
+                                if room in rooms and not rooms[room]:
+                                    print(f"Room {room} connections empty but waiting guests/details preserved.")
+                        
+                        print(f"Room {room} connection list emptied.")
 
     @socketio.on('join_room')
     def handle_join_room(data):
-        room = data.get('room')
+        room = data.get('room', '').strip().lower() # Case-insensitive normalization
+        user_name = data.get('user_name', 'Guest')
+        user_id = data.get('user_id')
+
         if not room: return
         
-        # Check if room exists and has users
-        if room not in rooms or not rooms[room]:
-            # Initializing Room as Host
+        print(f"DEBUG: join_room. Room: '{room}', User: '{user_name}', ID: {user_id}")
+        print(f"DEBUG: Global Status - sessions: {list(room_host_ids.keys())}, active_hosts: {list(room_hosts.keys())}")
+
+        # 1. Prune stale sessions for this user_id in this room
+        if user_id:
+            stale_sids = []
+            for rid, details in room_user_details.get(room, {}).items():
+                if details.get('user_id') == user_id and rid != request.sid:
+                    stale_sids.append(rid)
+            
+            for stale_sid in stale_sids:
+                print(f"DEBUG: Pruning and notifying of stale SID {stale_sid} for user {user_id}")
+                # Notify others to remove this ghost
+                emit('user_left', {'sid': stale_sid}, to=room)
+                
+                if room in rooms and stale_sid in rooms[room]:
+                    rooms[room].remove(stale_sid)
+                if room in room_user_details and stale_sid in room_user_details[room]:
+                    del room_user_details[room][stale_sid]
+
+        # 2. Does a session for this room already exist?
+        session_exists = room in room_host_ids
+        
+        # 3. Is this the original host returning?
+        is_returning_host = user_id and session_exists and room_host_ids[room] == user_id
+        
+        # 4. Handle First-Time Initialization
+        if not session_exists:
+            print(f"DEBUG: Initializing new room session: {room}")
             rooms[room] = []
-            room_hosts[room] = request.sid
-            room_audio_buffers[room] = []
-            live_transcripts[room] = [] # Initialize transcript buffer
+            room_audio_buffers[room] = [] 
+            live_transcripts[room] = []
+            room_user_details[room] = {}
+            room_host_ids[room] = user_id 
             
+            room_hosts[room] = request.sid
             join_room(room)
             rooms[room].append(request.sid)
+            room_user_details[room][request.sid] = {'name': user_name, 'user_id': user_id}
             
             emit('role_assigned', {'role': 'host'})
-            print(f"Room {room} initialized by Host {request.sid}")
+            print(f"Room {room} session STARTED by Host {request.sid}")
             return
 
-        # If room exists, check if user is already in it (e.g. refresh)
-        if request.sid in rooms[room]:
-            emit('room_joined_success', {'role': 'host' if room_hosts.get(room) == request.sid else 'participant'})
+        # 5. Handle Host Reclamation
+        if is_returning_host:
+            print(f"DEBUG: Host RECLAIMING session for {room}")
+            room_hosts[room] = request.sid
+            join_room(room)
+            if request.sid not in rooms[room]:
+                rooms[room].append(request.sid)
+            
+            if room not in room_user_details: room_user_details[room] = {}
+            room_user_details[room][request.sid] = {'name': user_name, 'user_id': user_id}
+            
+            emit('role_assigned', {'role': 'host'})
+            
+            # Sync Host with existing participants
+            existing_users = []
+            for uid in rooms.get(room, []):
+                if uid != request.sid:
+                    details = room_user_details.get(room, {}).get(uid, {})
+                    uname = details.get('name', 'Participant')
+                    u_id = details.get('user_id')
+                    existing_users.append({'sid': uid, 'name': uname, 'role': 'participant', 'user_id': u_id})
+            
+            if existing_users:
+                emit('all_users', {'users': existing_users})
+            
+            # Notify others the host is back
+            emit('user_joined', {'sid': request.sid, 'name': user_name, 'role': 'host', 'user_id': user_id}, to=room, include_self=False)
+            
+            # Re-notify about waiting guests
+            waiting_others = room_user_details.get(room, {})
+            for other_sid, details in waiting_others.items():
+                if other_sid not in rooms.get(room, []) and other_sid != request.sid:
+                    print(f"DEBUG: Notifying host of waiting guest: {other_sid}")
+                    emit('entry_requested', {'sid': other_sid, 'name': details.get('name', 'Guest')})
+            
             return
 
-        # If joining as guest, notify host
-        host_sid = room_hosts.get(room)
-        if host_sid:
-            emit('entry_requested', {'sid': request.sid}, to=host_sid)
-            print(f"User {request.sid} requesting entry to Room {room}. Notifying Host {host_sid}")
+        # 6. Handle Guest Join (Existing Session)
+        print(f"DEBUG: Guest {user_name} joining existing session {room}")
+        if request.sid not in rooms.get(room, []):
+            # MANDATORY: Notify Guest they are waiting
+            emit('waiting_for_approval', {}, to=request.sid)
+            
+            # Store guest details
+            if room not in room_user_details: room_user_details[room] = {}
+            room_user_details[room][request.sid] = {'name': user_name, 'user_id': user_id}
+            
+            # Notify host if online
+            host_sid = room_hosts.get(room)
+            if host_sid:
+                emit('entry_requested', {'sid': request.sid, 'name': user_name}, to=host_sid)
+            else:
+                print(f"DEBUG: Host for {room} is currently offline. Guest {request.sid} queued.")
         else:
-            # Host missing but users exist? Make this user host.
-            room_hosts[room] = request.sid
-            join_room(room)
-            rooms[room].append(request.sid)
-            emit('role_assigned', {'role': 'host'})
-            print(f"Host recovered for Room {room}: {request.sid}")
+            # Already in room (rejoin after approval)
+            emit('room_joined_success', {'role': 'participant'})
 
     @socketio.on('approve_entry')
     def handle_approve_entry(data):
@@ -96,34 +188,102 @@ def register_socket_events(socketio):
         room = data.get('room')
         
         if not target_sid or not room: return
+        room = room.strip()
 
         # Verify requester is the host
         if room_hosts.get(room) == request.sid:
-            join_room(room, sid=target_sid) 
-            
-            if room not in rooms: rooms[room] = []
-            if target_sid not in rooms[room]: rooms[room].append(target_sid)
-            
-            # 1. Notify the new joiner they are in
-            emit('room_joined_success', {'role': 'participant'}, to=target_sid)
-            
-            # 2. Tell the new joiner about everyone else
-            existing_users = [u for u in rooms[room] if u != target_sid]
-            emit('all_users', {'users': existing_users}, to=target_sid)
-            
-            # 3. Tell everyone else about the new joiner
-            emit('user_joined', {'sid': target_sid}, to=room, include_self=False)
-            
-            print(f"Host {request.sid} admitted {target_sid} to Room {room}")
+            try:
+                join_room(room, sid=target_sid) 
+                
+                if room not in rooms: rooms[room] = []
+                if target_sid not in rooms[room]: rooms[room].append(target_sid)
+                
+                # 1. Notify the new joiner they are in
+                emit('room_joined_success', {'role': 'participant'}, to=target_sid)
+                
+                # 2. Tell the new joiner about everyone else
+                existing_users_details = []
+                for uid in rooms[room]:
+                    if uid != target_sid:
+                        details = room_user_details.get(room, {}).get(uid, {})
+                        uname = details.get('name', 'Unknown')
+                        u_id = details.get('user_id')
+                        urole = 'host' if room_hosts.get(room) == uid else 'participant'
+                        existing_users_details.append({'sid': uid, 'name': uname, 'role': urole, 'user_id': u_id})
+
+                emit('all_users', {'users': existing_users_details}, to=target_sid)
+                
+                # 3. Tell everyone else about the new joiner
+                details = room_user_details.get(room, {}).get(target_sid, {})
+                target_name = details.get('name', 'Guest')
+                target_user_id = details.get('user_id')
+                
+                print(f"DEBUG: Approving entry for {target_sid} in {room}. Found name: {target_name}, ID: {target_user_id}")
+                emit('user_joined', {'sid': target_sid, 'name': target_name, 'role': 'participant', 'user_id': target_user_id}, to=room, include_self=False)
+                
+                print(f"Host {request.sid} admitted {target_sid} to Room {room}")
+            except Exception as e:
+                print(f"Error admitting user {target_sid} (likely disconnected): {e}")
+                # Clean up if needed
+                if room in rooms and target_sid in rooms[room]:
+                    rooms[room].remove(target_sid)
+                if room in room_user_details and target_sid in room_user_details[room]:
+                    del room_user_details[room][target_sid]
 
     @socketio.on('deny_entry')
     def handle_deny_entry(data):
         target_sid = data.get('target_sid')
         emit('entry_denied', {}, to=target_sid)
 
+    # --- Host Controls ---
+    @socketio.on('kick_user')
+    def handle_kick_user(data):
+        room = data.get('room')
+        if room: room = room.strip()
+        target_sid = data.get('target_sid')
+        
+        if room_hosts.get(room) != request.sid: return
+        
+        emit('kicked', {}, to=target_sid)
+        if room in rooms and target_sid in rooms[room]:
+            rooms[room].remove(target_sid)
+            
+        # Clean up user details
+        if room in room_user_details and target_sid in room_user_details[room]:
+            del room_user_details[room][target_sid]
+            
+        emit('user_left', {'sid': target_sid}, to=room)
+        print(f"Host {request.sid} kicked {target_sid} from {room}")
+
+    @socketio.on('mute_all')
+    def handle_mute_all(data):
+        room = data.get('room')
+        if room: room = room.strip()
+        if room_hosts.get(room) != request.sid: return
+        
+        # Emit to everyone EXCEPT host
+        emit('mute_force', {}, to=room, include_self=False)
+        print(f"Host {request.sid} muted all in {room}")
+
+    @socketio.on('end_meeting_for_all')
+    def handle_end_meeting_for_all(data):
+        room = data.get('room')
+        if room: room = room.strip()
+        if room_hosts.get(room) != request.sid: return
+        
+        emit('meeting_ended', {}, to=room)
+        
+        # Cleanup
+        if room in rooms: del rooms[room]
+        if room in room_hosts: del room_hosts[room]
+        if room in room_user_details: del room_user_details[room]
+        print(f"Host {request.sid} ended meeting {room} for all")
+
     @socketio.on('leave_room')
     def handle_leave_room(data):
-        room = data['room']
+        room = data.get('room')
+        if room: room = room.strip()
+        if not room: return
         leave_room(room)
         if room in rooms and request.sid in rooms[room]:
             rooms[room].remove(request.sid)
@@ -133,6 +293,7 @@ def register_socket_events(socketio):
     @socketio.on('audio_chunk')
     def handle_audio_chunk(data):
         room = data.get('room')
+        if room: room = room.strip()
         chunk = data.get('chunk') # Expecting bytes or specific format
         
         if room and chunk and room in room_audio_buffers:
