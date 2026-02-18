@@ -136,3 +136,20 @@ def send_notification_email(recipient_email, title, start_time, type='schedule')
     </html>
     """
     return _send_raw_email(recipient_email, subject, body, attachments=attachments)
+
+def send_email_custom(recipient_email, subject, body_text):
+    """Sends a custom email drafted by the AI Assistant"""
+    body_html = f"""
+    <html>
+      <body style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
+        <div style="max-width: 600px; margin: 0 auto; background-color: #f4f4f4; padding: 20px; border-radius: 10px; border: 1px solid #ddd;">
+          <h2 style="color: #4A90E2; border-bottom: 2px solid #4A90E2; padding-bottom: 10px;">AURALIS Assistant</h2>
+          <p style="font-size: 16px; line-height: 1.6;">{body_text}</p>
+          <br>
+          <hr style="border: 0; border-top: 1px solid #eee;">
+          <p style="font-size: 12px; color: #888; text-align: center;">This message was dispatched via Auralis Neural Executive Assistant.</p>
+        </div>
+      </body>
+    </html>
+    """
+    return _send_raw_email(recipient_email, subject, body_html)

@@ -1,5 +1,5 @@
 import os
-import google.generativeai as genai
+from google.genai import Client
 
 def summarize_text(text):
     """
@@ -12,30 +12,42 @@ def summarize_text(text):
     if not api_key:
         return "Error: GEMINI_API_KEY not found in environment variables."
 
-    genai.configure(api_key=api_key)
-    
-    prompt = f"""
-    You are an expert meeting assistant. Summarize the following meeting transcript.
-    
-    Transcript:
-    {text}
-    
-    Please provide the summary in the following Markdown format:
-    ### AI Meeting Insights
-    **Overview**: [Brief summary of the meeting]
-    
-    **Key Points**:
-    - [Point 1]
-    - [Point 2]
-    
-    **Action Items**:
-    - [ ] [Action Item 1]
-    - [ ] [Action Item 2]
-    """
-    
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(prompt)
+        client = Client(api_key=api_key)
+        
+        prompt = f"""
+        You are an expert meeting assistant. Summarize the following meeting transcript.
+        
+        Transcript:
+        {text}
+        
+        Please provide a comprehensive meeting report in EXACTLY this Markdown format:
+
+        # Meeting Technical Report
+        
+        ## 🎯 Executive Overview
+        [A high-level 2-3 sentence summary of the meeting's purpose and outcome]
+        
+        ## 🛠️ Key Discussion Points
+        - **Topic A**: [Summary of discussion]
+        - **Topic B**: [Summary of discussion]
+        
+        ## ✅ Important Decisions
+        - [Decision 1]
+        - [Decision 2]
+        
+        ## 📋 Action Items
+        - [ ] **Assignee**: [Task description]
+        - [ ] **Assignee**: [Task description]
+        
+        ## 📊 Sentiment & Engagement
+        [Brief note on the meeting tone and participant engagement]
+        """
+        
+        response = client.models.generate_content(
+            model='gemini-flash-latest',
+            contents=prompt
+        )
         return response.text
     except Exception as e:
         print(f"Gemini Summarization Error: {e}")

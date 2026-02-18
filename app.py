@@ -1,4 +1,7 @@
 import os
+import eventlet
+eventlet.monkey_patch()
+
 os.environ['EVENTLET_NO_GREENDNS'] = 'yes' # Force system DNS to avoid Lookup timed out on Windows
 
 import dns.resolver
@@ -6,12 +9,12 @@ resolver = dns.resolver.Resolver()
 resolver.nameservers = ['8.8.8.8']
 dns.resolver.default_resolver = resolver
 
-import eventlet
-eventlet.monkey_patch()
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
 from auth import auth_bp
+from assistant import assistant_bp
+from profile_bp import profile_bp
 from flask_socketio import SocketIO
 from socket_events import register_socket_events
 from utils.summarizer import summarize_text
@@ -23,10 +26,15 @@ from models.meeting import create_meeting, get_user_meetings, get_meeting_by_id,
 from models.schedule import create_schedule, get_user_schedules, delete_schedule
 from models.notification import create_notification, get_user_notifications, mark_as_read
 
+from database import db, init_db
+from flask_migrate import Migrate
+
 load_dotenv()
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'default_secret_key')
+init_db(app)
+
 # Enable CORS for all routes, allowing credentials if needed.
 CORS(app, resources={r"/*": {"origins": "*"}})
 socketio = SocketIO(
@@ -40,6 +48,16 @@ socketio = SocketIO(
 register_socket_events(socketio)
 
 app.register_blueprint(auth_bp, url_prefix='/api/auth')
+app.register_blueprint(assistant_bp, url_prefix='/api/assistant')
+app.register_blueprint(profile_bp, url_prefix='/api/profile')
+
+@app.after_request
+def add_security_headers(response):
+    # Set COOP to allow Google OAuth popups to communicate back to the opener
+    response.headers['Cross-Origin-Opener-Policy'] = 'same-origin-allow-popups'
+    # Set COEP to allow cross-origin embeddings if needed, or stick to safe defaults
+    response.headers['Cross-Origin-Embedder-Policy'] = 'unsafe-none'
+    return response
 
 @app.route('/api/ai/summarize', methods=['POST'])
 def ai_summarize():
@@ -64,16 +82,23 @@ def ask_ai():
     if not question:
         return jsonify({"error": "No question provided"}), 400
     
-    # 1. Search vector DB
-    relevant_chunks = vector_store.search(question)
-    
-    # 2. Generate Answer
-    answer = generate_answer(relevant_chunks, question)
-    
-    return jsonify({
-        "answer": answer,
-        "sources": relevant_chunks
-    })
+    try:
+        # 1. Search vector DB
+        relevant_chunks = vector_store.search(question)
+        
+        # 2. Generate Answer
+        answer = generate_answer(relevant_chunks, question)
+        
+        return jsonify({
+            "answer": answer,
+            "sources": relevant_chunks
+        })
+    except Exception as e:
+        print(f"Chatbot Error: {e}")
+        return jsonify({
+            "answer": "The neural core is currently re-indexing. Please attempt your query again in a moment.",
+            "sources": []
+        }), 200
 
 @app.route('/api/ai/transcribe', methods=['POST'])
 def ai_transcribe():
@@ -131,9 +156,8 @@ def create_new_meeting():
         
         # Add to Vector Store (async/background ideally, but sync for now)
         if meeting and data.get('transcript'):
-             # Using meeting['_id'] or similar unique ID
-             # meeting returned from create_meeting usually has _id as ObjectId, need str
-             m_id = str(meeting.get('_id'))
+             # Using meeting['id']
+             m_id = str(meeting.get('id'))
              text_content = f"Title: {meeting.get('title')}\nSummary: {meeting.get('summary')}\nTranscript: {meeting.get('transcript')}"
              vector_store.add_meeting(m_id, text_content, metadata={"title": meeting.get('title')})
 
@@ -170,6 +194,36 @@ def get_meeting(meeting_id):
             return jsonify({"error": "Meeting not found"}), 404
     except Exception as e:
         return jsonify({"error": "Invalid token"}), 401
+
+@app.route('/api/meetings/<meeting_id>/download-pdf', methods=['GET'])
+def download_meeting_pdf(meeting_id):
+    """Generate and download a PDF summary of the meeting"""
+    auth_header = request.headers.get('Authorization')
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return jsonify({"error": "Unauthorized"}), 401
+    
+    token = auth_header.split(' ')[1]
+    try:
+        payload = decode_token(token)
+        user_id = payload['user_id']
+        
+        meeting = get_meeting_by_id(meeting_id, user_id)
+        if not meeting:
+            return jsonify({"error": "Meeting not found"}), 404
+            
+        from utils.pdf_generator import generate_meeting_pdf
+        from flask import make_response
+        
+        pdf_bytes = generate_meeting_pdf(meeting)
+        
+        response = make_response(pdf_bytes)
+        response.headers.set('Content-Type', 'application/pdf')
+        response.headers.set('Content-Disposition', 'attachment', filename=f"Meeting_Report_{meeting_id}.pdf")
+        return response
+        
+    except Exception as e:
+        print(f"PDF Download Error: {e}")
+        return jsonify({"error": "Internal failure generating PDF"}), 500
 
 @app.route('/api/meetings/<meeting_id>', methods=['DELETE'])
 def delete_meeting_endpoint(meeting_id):

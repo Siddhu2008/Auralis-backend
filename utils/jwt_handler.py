@@ -3,7 +3,7 @@ import datetime
 import os
 from flask import current_app
 
-def generate_token(user_id, email, expires_in=3600):
+def generate_token(user_id, email, expires_in=3600, **kwargs):
     """
     Generates a JWT token for the user.
     """
@@ -12,7 +12,10 @@ def generate_token(user_id, email, expires_in=3600):
             'exp': datetime.datetime.utcnow() + datetime.timedelta(seconds=expires_in),
             'iat': datetime.datetime.utcnow(),
             'sub': str(user_id),
-            'email': email
+            'email': email,
+            'name': kwargs.get('name'),
+            'profile_image': kwargs.get('profile_image'),
+            'provider': kwargs.get('provider')
         }
         return jwt.encode(
             payload,

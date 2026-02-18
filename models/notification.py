@@ -1,46 +1,44 @@
+from database import db
 from datetime import datetime
-from bson.objectid import ObjectId
-import os
 
-try:
-    from models.meeting import client
-except ImportError:
-    from pymongo import MongoClient
-    client = MongoClient(os.getenv('MONGO_URI'), serverSelectionTimeoutMS=2000)
+class Notification(db.Model):
+    __tablename__ = 'notifications'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    message = db.Column(db.String(500), nullable=False)
+    type = db.Column(db.String(20), default='info')
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    is_read = db.Column(db.Boolean, default=False)
 
-db = client['auralis']
-notifications_collection = db['notifications']
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'message': self.message,
+            'type': self.type,
+            'created_at': self.created_at.isoformat(),
+            'is_read': self.is_read
+        }
 
 def create_notification(user_id, message, type='info'):
-    """Create a notification for a user"""
-    notif = {
-        'user_id': user_id,
-        'message': message,
-        'type': type, # 'info', 'success', 'warning', 'error'
-        'created_at': datetime.utcnow(),
-        'is_read': False
-    }
-    result = notifications_collection.insert_one(notif)
-    notif['_id'] = str(result.inserted_id)
-    return notif
+    notif = Notification(user_id=user_id, message=message, type=type)
+    db.session.add(notif)
+    db.session.commit()
+    return notif.to_dict()
 
 def get_user_notifications(user_id, only_unread=True):
-    """Get notifications for a user"""
-    query = {'user_id': user_id}
+    query = Notification.query.filter_by(user_id=user_id)
     if only_unread:
-        query['is_read'] = False
-        
-    notifs = list(notifications_collection.find(query).sort('created_at', -1).limit(20))
-    for n in notifs:
-        n['_id'] = str(n['_id'])
-        if isinstance(n.get('created_at'), datetime):
-            n['created_at'] = n['created_at'].isoformat()
-    return notifs
+        query = query.filter_by(is_read=False)
+    
+    notifs = query.order_by(Notification.created_at.desc()).limit(20).all()
+    return [n.to_dict() for n in notifs]
 
 def mark_as_read(notif_id, user_id):
-    """Mark a notification as read"""
-    result = notifications_collection.update_one(
-        {'_id': ObjectId(notif_id), 'user_id': user_id},
-        {'$set': {'is_read': True}}
-    )
-    return result.modified_count > 0
+    notif = Notification.query.filter_by(id=notif_id, user_id=user_id).first()
+    if notif:
+        notif.is_read = True
+        db.session.commit()
+        return True
+    return False

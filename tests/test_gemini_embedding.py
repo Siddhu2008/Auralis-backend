@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-import google.generativeai as genai
+from google.genai import Client
 
 load_dotenv()
 api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
@@ -11,17 +11,18 @@ if not api_key:
     print("No API Key found in environment or .env")
     exit(1)
 
-genai.configure(api_key=api_key)
-
 try:
+    client = Client(api_key=api_key)
     print("Attempting to embed 'Hello world'...")
-    res = genai.embed_content(
-        model="models/embedding-001",
-        content="Hello world",
-        task_type="retrieval_document"
+    res = client.models.embed_content(
+        model="gemini-embedding-001", 
+        contents="Hello world",
+        config={
+            "task_type": "retrieval_document"
+        }
     )
-    if 'embedding' in res:
-        print(f"Success! Embedding length: {len(res['embedding'])}")
+    if res.embeddings:
+        print(f"Success! Embedding length: {len(res.embeddings[0].values)}")
     else:
         print(f"Unexpected response format: {res}")
 except Exception as e:

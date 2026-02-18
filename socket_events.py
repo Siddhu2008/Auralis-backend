@@ -7,6 +7,8 @@ from utils.transcriber import transcribe_audio
 from utils.summarizer import summarize_text
 from models.meeting import create_meeting
 from utils.ai_response import generate_avatar_chat
+from utils.ai_service import ai_service
+from models.schedule import Schedule
 from datetime import datetime
 
 # Room User Details: room_user_details[room_id][sid] = {'name': 'John Doe', ...}
@@ -16,6 +18,8 @@ room_hosts = {}
 room_host_ids = {} # NEW: Track host user_id
 room_audio_buffers = {}
 live_transcripts = {}
+proxy_states = {} # Track if user has proxy enabled: proxy_states[sid] = True/False
+"NO_RESPONSE_NEEDED" # Sentinel for AI Proxy
 
 def register_socket_events(socketio):
     @socketio.on('connect')
@@ -48,29 +52,30 @@ def register_socket_events(socketio):
                         emit('role_assigned', {'role': 'host'}, to=new_host) # Notify new host
                         print(f"Host left. New host for {room} is {new_host}")
                     else:
-                        # Room empty of connected users
-                        # We keep room_hosts[room] as None but keep the key to indicate it exists?
-                        # No, let's keep it simple.
-                        del room_hosts[room]
-                        # CRITICAL: Keep rooms[room] as [] instead of deleting it
-                        # This avoids is_empty_room = True for the next guest
-                        rooms[room] = [] 
-                        
-                        if room in room_audio_buffers:
-                            del room_audio_buffers[room]
-                        
-                        # Only delete user details if NO ONE is left (including waiting guests)
-                        if room in room_user_details:
-                            if not room_user_details[room]:
-                                del room_user_details[room]
-                                # CRITICAL: We NO LONGER delete room_host_ids here.
-                                # This ensures the session owner is remembered for reclamation.
-                                del rooms[room] 
-                                print(f"Room {room} logic-cleared but host-id preserved for return.")
-                            else:
-                                if room in rooms and not rooms[room]:
-                                    print(f"Room {room} connections empty but waiting guests/details preserved.")
-                        
+                        # Trigger Auto-Summarization
+                        if room in live_transcripts and live_transcripts[room]:
+                            full_text = " ".join(live_transcripts[room])
+                            if len(full_text) > 50: # Only summarize meaningful content
+                                print(f"[AI] Room {room} is empty. Generating automatic summary...")
+                                def auto_summarize():
+                                    try:
+                                        summary = summarize_text(full_text)
+                                        host_id = room_host_ids.get(room)
+                                        if host_id:
+                                            create_meeting(
+                                                user_id=host_id,
+                                                room_id=room,
+                                                title=f"AI Summary: {room}",
+                                                transcript=full_text,
+                                                summary=summary,
+                                                duration='Automated'
+                                            )
+                                            print(f"[AI] Summary saved for room {room}")
+                                    except Exception as ex:
+                                        print(f"[AI] Auto-summary failed: {ex}")
+                                
+                                eventlet.spawn(auto_summarize)
+
                         print(f"Room {room} connection list emptied.")
 
     @socketio.on('join_room')
@@ -101,6 +106,13 @@ def register_socket_events(socketio):
                 if room in room_user_details and stale_sid in room_user_details[room]:
                     del room_user_details[room][stale_sid]
 
+        # --- AI Proxy Logic ---
+        # 1. Cancel any active proxy timer for this user
+        ai_service.cancel_absence_timer(room, user_id)
+        # 2. If a proxy was already active for this ID, notify others to remove it
+        emit('proxy_retired', {'user_id': user_id}, to=room)
+        # ----------------------
+
         # 2. Does a session for this room already exist?
         session_exists = room in room_host_ids
         
@@ -121,6 +133,26 @@ def register_socket_events(socketio):
             rooms[room].append(request.sid)
             room_user_details[room][request.sid] = {'name': user_name, 'user_id': user_id}
             
+            # Add Hidden AI Participant
+            room_user_details[room]['auralis_ai'] = {'name': 'Auralis AI', 'role': 'background_ai', 'user_id': 'system_ai'}
+            
+            # Check for scheduled participants to start proxy timers
+            try:
+                # Simple lookup: match schedule where room_id or title contains room name
+                schedule = Schedule.query.filter(
+                    (Schedule.user_id == user_id) & 
+                    (Schedule.status == 'upcoming')
+                ).first()
+                
+                if schedule and schedule.participants:
+                    print(f"[AI] Found schedule for room {room}. Monitoring participants: {schedule.participants}")
+                    for p_email in schedule.participants:
+                        # Start timer for each participant (except the joining host)
+                        # We need an identifier for them. For now, using email as user_id proxy.
+                        ai_service.start_absence_timer(room, p_email, p_email.split('@')[0], 'participant', emit)
+            except Exception as e:
+                print(f"[AI] Schedule lookup error: {e}")
+
             emit('role_assigned', {'role': 'host'})
             print(f"Room {room} session STARTED by Host {request.sid}")
             return
@@ -440,6 +472,9 @@ def register_socket_events(socketio):
             'timestamp': data.get('timestamp')
         }, to=room)
         
+        # Trigger proxy check for other users
+        handle_proxy_check({'room': room, 'message': message})
+
         # Check for trigger
         if "@ai" in message.lower() or "auralis" in message.lower():
             transcript = " ".join(live_transcripts.get(room, []))
@@ -450,3 +485,93 @@ def register_socket_events(socketio):
                 'timestamp': datetime.utcnow().isoformat()
             }, to=room)
 
+    @socketio.on('toggle_proxy')
+    def handle_toggle_proxy(data):
+        room = data.get('room')
+        enabled = data.get('enabled', False)
+        proxy_states[request.sid] = enabled
+        print(f"Proxy Mode {'Enabled' if enabled else 'Disabled'} for {request.sid} in {room}")
+        
+        # Notify others (optional, for UI indicators)
+        emit('proxy_status_updated', {'sid': request.sid, 'enabled': enabled}, to=room)
+
+    # Automatically trigger proxy if enabled for other users
+    @socketio.on('chat_message_proxy_check')
+    def handle_proxy_check(data):
+        room = data.get('room')
+        message = data.get('message')
+        sender_sid = request.sid
+        
+        transcript = " ".join(live_transcripts.get(room, []))
+        
+        # Check all other users in the room for proxy mode
+        for sid, details in room_user_details.get(room, {}).items():
+            if sid != sender_sid and proxy_states.get(sid):
+                from utils.ai_response import generate_proxy_response
+                user_name = details.get('name', 'User')
+                # In a real app, we'd fetch user_profile from DB
+                response = generate_proxy_response(user_name, "A team member", message, transcript)
+                
+                if response:
+                    emit('chat_message', {
+                        'sender': sid,
+                        'message': f"[Proxy] {response}",
+                        'timestamp': datetime.utcnow().isoformat()
+                    }, to=room)
+    @socketio.on('send_reaction')
+    def handle_reaction(data):
+        room = data.get('room')
+        reaction = data.get('reaction')
+        emit('reaction_received', {'sid': request.sid, 'reaction': reaction}, to=room)
+
+    @socketio.on('raise_hand')
+    def handle_raise_hand(data):
+        room = data.get('room')
+        is_raised = data.get('is_raised', False)
+        emit('hand_status_updated', {'sid': request.sid, 'is_raised': is_raised}, to=room)
+
+    @socketio.on('create_poll')
+    def handle_create_poll(data):
+        room = data.get('room')
+        poll = {
+            'id': datetime.utcnow().timestamp(),
+            'creator': request.sid,
+            'question': data.get('question'),
+            'options': data.get('options'),
+            'votes': {opt: [] for opt in data.get('options', [])},
+            'active': True
+        }
+        emit('poll_created', poll, to=room)
+
+    @socketio.on('cast_vote')
+    def handle_cast_vote(data):
+        room = data.get('room')
+        poll_id = data.get('poll_id')
+        option = data.get('option')
+        emit('vote_received', {'poll_id': poll_id, 'option': option, 'voter': request.sid}, to=room)
+
+    @socketio.on('breakout_move')
+    def handle_breakout_move(data):
+        room = data.get('room')
+        target_sid = data.get('target_sid')
+        breakout_id = data.get('breakout_id')
+        emit('move_to_breakout', {'room': breakout_id}, to=target_sid)
+
+    @socketio.on('proxy_joined')
+    def handle_proxy_joined(data):
+        room = data.get('room')
+        if not room: return
+        # Store proxy in room_user_details
+        proxy_sid = f"proxy_{data['user_id']}"
+        if room not in room_user_details: room_user_details[room] = {}
+        room_user_details[room][proxy_sid] = {
+            'name': data['name'],
+            'role': 'proxy',
+            'user_id': data['user_id']
+        }
+        emit('user_joined', {
+            'sid': proxy_sid,
+            'name': data['name'],
+            'role': 'proxy',
+            'user_id': data['user_id']
+        }, to=room)

@@ -1,5 +1,5 @@
 import os
-import google.generativeai as genai
+from google.genai import Client
 
 def transcribe_audio(file_path):
     """
@@ -10,24 +10,18 @@ def transcribe_audio(file_path):
         print("Warning: No Gemini API Key. Returning mock transcript.")
         return {"text": "[Mock Transcript] Audio transcription unavailable without API Key."}
 
-    genai.configure(api_key=api_key)
-    
     try:
-        # gemini-1.5-flash is good for multimodal (audio)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        client = Client(api_key=api_key)
         
         # Upload the file
-        # Note: For production, we should handle file upload/lifecycle properly.
-        # For this MVP, we assume the file is small enough or we use the File API.
-        
-        # Using the File API for audio
-        audio_file = genai.upload_file(path=file_path)
+        # Note: In the new SDK, client.files.upload is the way to go.
+        audio_file = client.files.upload(path=file_path)
         
         prompt = "Transcribe this audio file accurately."
-        response = model.generate_content([prompt, audio_file])
-        
-        # Cleanup
-        # genai.delete_file(audio_file.name) # clean up if needed immediately
+        response = client.models.generate_content(
+            model='gemini-flash-latest',
+            contents=[prompt, audio_file]
+        )
         
         return {"text": response.text}
     except Exception as e:
