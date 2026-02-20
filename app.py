@@ -35,11 +35,14 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'default_secret_key')
 init_db(app)
 
-# Enable CORS for all routes, allowing credentials if needed.
-CORS(app, resources={r"/*": {"origins": "*"}})
+FRONTEND_ORIGINS = [
+    "http://localhost:5173",
+    "https://auralis-frontend.vercel.app"
+]
+CORS(app, resources={r"/*": {"origins": FRONTEND_ORIGINS}}, supports_credentials=True)
 socketio = SocketIO(
     app, 
-    cors_allowed_origins="*",
+    cors_allowed_origins=FRONTEND_ORIGINS,
     async_mode='eventlet',
     ping_timeout=60,
     ping_interval=25

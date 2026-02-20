@@ -132,8 +132,12 @@ def google_auth():
                 pass
         
         # Generate our app's JWT
-        jwt_token = generate_token(user_id=user['_id'], email=user['email'])
-        
+        user_id = user.get('_id') or user.get('id')
+        if not user_id:
+            print("DEBUG: user object missing id field:", user)
+            return jsonify({'error': 'User object missing id'}), 500
+        jwt_token = generate_token(user_id=user_id, email=user['email'])
+
         return jsonify({
             'token': jwt_token,
             'user': {
