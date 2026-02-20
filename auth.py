@@ -5,6 +5,7 @@ from utils.otp_handler import generate_otp, store_otp, verify_otp
 from utils.email_handler import send_email_otp
 from utils.jwt_handler import generate_token
 from models.user import create_user, find_user_by_email, find_user_by_google_id
+from models.user_settings import create_default_settings_for_user
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
@@ -55,9 +56,11 @@ def verify():
             user = find_user_by_email(email)
             if not user:
                 user = create_user(email=email, name=email.split('@')[0])
+            else:
+                create_default_settings_for_user(user['id'])
             
             # Generate JWT with database user ID
-            token = generate_token(user_id=user['_id'], email=user['email'])
+            token = generate_token(user_id=user['id'], email=user['email'])
             return jsonify({'token': token, 'user': {'email': user['email'], 'name': user['name']}}), 200
         else:
             return jsonify({'error': 'Invalid or expired OTP'}), 401
@@ -118,7 +121,7 @@ def google_auth():
         if not google_id or not email:
             return jsonify({'error': 'Google token missing required fields (sub/email)'}), 400
             
-        name = idinfo.get('name', email.split('@')[0])
+        name = email.split('@')[0]
         
         # Find or create user
         user = find_user_by_google_id(google_id)
@@ -129,7 +132,9 @@ def google_auth():
             else:
                 # User exists by email, link Google ID if not present
                 # (Optional logic, for now just ensure they can log in)
-                pass
+                create_default_settings_for_user(user['id'])
+        else:
+            create_default_settings_for_user(user['id'])
         
         # Generate our app's JWT
         user_id = user.get('_id') or user.get('id')

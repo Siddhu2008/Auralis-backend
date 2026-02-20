@@ -8,6 +8,7 @@ from models.user import find_user_by_id
 from models.reminder import create_reminder, get_user_reminders
 from models.action_log import log_action, get_action_history
 from models.user_preference import get_preferences, set_preference
+from models.user_settings import get_or_create_user_settings
 from models.schedule import create_schedule, update_schedule, delete_schedule, get_user_schedules
 from models.meeting import get_user_meetings
 from utils.email_handler import send_email_otp, send_email_custom
@@ -49,6 +50,7 @@ def assistant_chat():
 
     action_history = get_action_history(user_id, limit=10)
     user_prefs = get_preferences(user_id)
+    user_settings = get_or_create_user_settings(user_id)
     upcoming_schedules = get_user_schedules(user_id)
     recent_meetings = get_user_meetings(user_id)[:5] # Last 5 meeting summaries
 
@@ -58,12 +60,20 @@ def assistant_chat():
         "user_preferences": user_prefs,
         "upcoming_schedules": upcoming_schedules,
         "recent_meeting_summaries": [{"title": m['title'], "summary": m['summary']} for m in recent_meetings],
-        "current_time": datetime.utcnow().isoformat()
+        "current_time": datetime.utcnow().isoformat(),
+        "settings": user_settings.to_dict(),
     }
+
+    token_limit_map = {"short": 256, "medium": 640, "detailed": 1024}
+    max_output_tokens = token_limit_map.get(user_settings.assistant_response_length, 640)
 
     prompt = f"""
     You are the 'Auralis Executive Assistant', a premium AI manager for high-stakes professionals.
-    Your tone is ultra-professional, efficient, and proactive.
+    User-configured tone: {user_settings.assistant_tone}.
+    Preferred language: {user_settings.language}.
+    Response style length: {user_settings.assistant_response_length}.
+    Auto follow-up suggestions enabled: {user_settings.auto_followups_enabled}.
+    Your tone must strictly align with the configured tone while remaining helpful.
     
     SYSTEM CONTEXT:
     {json.dumps(context, indent=2)}
@@ -76,6 +86,8 @@ def assistant_chat():
     - If information is missing, ask for it.
     - Use 'user_preferences' to suggest optimal times or frequent contacts.
     - Use 'action_history' to avoid duplicating tasks.
+    - Respect working hours from settings when proposing meeting times.
+    - If auto follow-up is disabled, do not add unsolicited follow-up suggestions.
     
     OUTPUT FORMAT:
     Return JSON:
@@ -93,7 +105,8 @@ def assistant_chat():
             model='gemini-flash-latest',
             contents=prompt,
             config={
-                'response_mime_type': 'application/json'
+                'response_mime_type': 'application/json',
+                'max_output_tokens': max_output_tokens,
             }
         )
         
@@ -170,6 +183,10 @@ def assistant_execute():
         return jsonify({"error": "Protocol not found"}), 404
 
     elif action == 'email':
+        settings = get_or_create_user_settings(user_id)
+        if settings.require_email_approval and not action_data.get("approved", False):
+            return jsonify({"error": "Email send blocked until explicit approval is provided."}), 400
+
         to = action_data.get('to')
         subject = action_data.get('subject', 'Message from Auralis Assistant')
         body = action_data.get('body')
@@ -212,6 +229,15 @@ def get_briefing():
         return jsonify({"error": "Invalid token"}), 401
 
     try:
+        settings = get_or_create_user_settings(user_id)
+        if not settings.daily_briefing_enabled:
+            return jsonify({
+                "upcoming_meetings": [],
+                "urgent_tasks": [],
+                "recent_communications": 0,
+                "summary_text": "Daily briefing is disabled in your settings."
+            }), 200
+
         schedules = get_user_schedules(user_id)
         reminders = get_user_reminders(user_id)
         emails = fetch_recent_emails(limit=5)

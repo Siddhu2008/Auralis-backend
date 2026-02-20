@@ -7,6 +7,7 @@ import models.notification
 import models.reminder
 import models.action_log
 import models.user_preference
+import models.user_settings
 
 with app.app_context():
     print("Dropping existing database tables...")

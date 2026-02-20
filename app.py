@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from auth import auth_bp
 from assistant import assistant_bp
 from profile_bp import profile_bp
+from settings_bp import settings_bp
 from flask_socketio import SocketIO
 from socket_events import register_socket_events
 from utils.summarizer import summarize_text
@@ -25,8 +26,9 @@ from utils.ai_response import generate_answer
 from models.meeting import create_meeting, get_user_meetings, get_meeting_by_id, delete_meeting
 from models.schedule import create_schedule, get_user_schedules, delete_schedule
 from models.notification import create_notification, get_user_notifications, mark_as_read
+from models.user_settings import get_or_create_user_settings
 
-from database import db, init_db
+from database import db, init_db, ensure_database_schema
 from flask_migrate import Migrate
 
 load_dotenv()
@@ -34,6 +36,7 @@ load_dotenv()
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'default_secret_key')
 init_db(app)
+ensure_database_schema(app)
 
 FRONTEND_ORIGINS = [
     "http://localhost:5173",
@@ -53,6 +56,7 @@ register_socket_events(socketio)
 app.register_blueprint(auth_bp, url_prefix='/api/auth')
 app.register_blueprint(assistant_bp, url_prefix='/api/assistant')
 app.register_blueprint(profile_bp, url_prefix='/api/profile')
+app.register_blueprint(settings_bp, url_prefix='/api/settings')
 
 @app.after_request
 def add_security_headers(response):
@@ -164,13 +168,16 @@ def create_new_meeting():
              text_content = f"Title: {meeting.get('title')}\nSummary: {meeting.get('summary')}\nTranscript: {meeting.get('transcript')}"
              vector_store.add_meeting(m_id, text_content, metadata={"title": meeting.get('title')})
 
+        settings = get_or_create_user_settings(user_id)
+
         # Trigger Notifications
-        create_notification(user_id, f"Meeting saved: {meeting.get('title')}", type='success')
+        if settings.notifications_enabled:
+            create_notification(user_id, f"Meeting saved: {meeting.get('title')}", type='success')
         
         # Email Notification (optional, but requested by user)
         # Note: we need the email from payload
         user_email = payload.get('email')
-        if user_email:
+        if user_email and settings.email_notifications_enabled:
             send_notification_email(user_email, meeting.get('title'), "now", type='meeting')
 
         return jsonify({"meeting": meeting}), 201
@@ -274,14 +281,18 @@ def add_schedule():
             user_id=user_id,
             title=data.get('title'),
             start_time=data.get('start_time'),
-            participants=data.get('participants')
+            participants=data.get('participants'),
+            duration_minutes=data.get('duration_minutes'),
         )
         
+        settings = get_or_create_user_settings(user_id)
+
         # Trigger In-App Notification
-        create_notification(user_id, f"Project Meeting scheduled: {data.get('title')}", type='schedule')
+        if settings.notifications_enabled:
+            create_notification(user_id, f"Project Meeting scheduled: {data.get('title')}", type='schedule')
         
         # Trigger Email Notification
-        if user_email:
+        if user_email and settings.email_notifications_enabled:
             send_notification_email(user_email, data.get('title'), data.get('start_time'), type='schedule')
 
         return jsonify({"schedule": schedule}), 201
@@ -306,6 +317,9 @@ def get_notifications():
     token = auth_header.split(' ')[1]
     try:
         payload = decode_token(token)
+        settings = get_or_create_user_settings(payload['user_id'])
+        if not settings.notifications_enabled:
+            return jsonify({"notifications": []}), 200
     except Exception as e:
         return jsonify({"error": f"Auth error: {str(e)}"}), 401
         
