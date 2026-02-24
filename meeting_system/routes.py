@@ -64,9 +64,12 @@ def schedule_meeting():
             frontend_base_url=request.host_url.rstrip("/"),
         )
     except ValueError as exc:
+        # User input / validation issues are safe to surface.
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
-        return jsonify({"error": f"Schedule creation failed: {exc}"}), 500
+        # Avoid leaking internal details (SQL, stack traces) to clients.
+        print(f"[MEETING_SCHEDULE_ERROR] {exc}")
+        return jsonify({"error": "Schedule creation failed"}), 500
 
     return jsonify(
         {
