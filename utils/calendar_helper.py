@@ -53,3 +53,29 @@ def generate_google_calendar_link(title, start_time_iso, duration_minutes=60):
     }
     
     return f"{base_url}&{urllib.parse.urlencode(params)}"
+
+
+def create_google_calendar_event(
+    owner_email,
+    *,
+    title,
+    start_time,
+    meeting_link,
+    attendees=None,
+    end_time=None,
+):
+    """
+    Lightweight integration point for Google Calendar API.
+    Returns event metadata suitable for persistence/logging.
+    """
+    attendees = attendees or []
+    calendar_link = generate_google_calendar_link(title, start_time)
+    return {
+        "owner_email": owner_email,
+        "title": title,
+        "start_time": start_time,
+        "end_time": end_time,
+        "meeting_link": meeting_link,
+        "attendees": attendees,
+        "calendar_link": calendar_link,
+    }

@@ -17,3 +17,4 @@ flask-migrate
 psycopg2-binary
 fpdf2
 gunicorn
+icalendar

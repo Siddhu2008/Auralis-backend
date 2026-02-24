@@ -14,6 +14,9 @@ class Meeting(db.Model):
     duration = db.Column(db.String(20), default='N/A')
     participants_count = db.Column(db.Integer, default=1)
     recording_url = db.Column(db.String(500), nullable=True)
+    status = db.Column(db.String(20), default='completed')
+    ended_at = db.Column(db.DateTime, nullable=True)
+    action_items = db.Column(db.JSON, default=list)
 
     def to_dict(self):
         return {
@@ -26,10 +29,25 @@ class Meeting(db.Model):
             'summary': self.summary,
             'duration': self.duration,
             'participants_count': self.participants_count,
-            'recording_url': self.recording_url
+            'recording_url': self.recording_url,
+            'status': self.status,
+            'ended_at': self.ended_at.isoformat() if self.ended_at else None,
+            'action_items': self.action_items or []
         }
 
-def create_meeting(user_id, room_id, title, transcript, summary, duration='N/A', participants_count=1):
+def create_meeting(
+    user_id,
+    room_id,
+    title,
+    transcript,
+    summary,
+    duration='N/A',
+    participants_count=1,
+    recording_url=None,
+    status='completed',
+    ended_at=None,
+    action_items=None,
+):
     meeting = Meeting(
         user_id=user_id,
         room_id=room_id,
@@ -37,7 +55,11 @@ def create_meeting(user_id, room_id, title, transcript, summary, duration='N/A',
         transcript=transcript,
         summary=summary,
         duration=duration,
-        participants_count=participants_count
+        participants_count=participants_count,
+        recording_url=recording_url,
+        status=status,
+        ended_at=ended_at or datetime.utcnow(),
+        action_items=action_items or [],
     )
     db.session.add(meeting)
     db.session.commit()

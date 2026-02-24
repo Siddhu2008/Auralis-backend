@@ -7,8 +7,16 @@ db = SQLAlchemy()
 migrate = Migrate()
 
 def init_db(app):
-    app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///auralis.db')
+    database_url = os.getenv('DATABASE_URL', 'sqlite:///auralis.db')
+    if database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql://", 1)
+
+    app.config['SQLALCHEMY_DATABASE_URI'] = database_url
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+        "pool_pre_ping": True,
+        "pool_recycle": 1800,
+    }
     db.init_app(app)
     migrate.init_app(app, db)
 

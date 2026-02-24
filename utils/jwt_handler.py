@@ -45,3 +45,30 @@ def decode_token(token):
         raise Exception('Signature expired. Please log in again.')
     except jwt.InvalidTokenError:
         raise Exception('Invalid token. Please log in again.')
+
+
+def generate_meeting_access_token(user_id, meeting_id, role, expires_in=7200):
+    payload = {
+        'exp': datetime.datetime.utcnow() + datetime.timedelta(seconds=expires_in),
+        'iat': datetime.datetime.utcnow(),
+        'sub': str(user_id),
+        'meeting_id': int(meeting_id),
+        'meeting_role': role,
+        'token_type': 'meeting_access'
+    }
+    return jwt.encode(
+        payload,
+        current_app.config.get('SECRET_KEY'),
+        algorithm='HS256'
+    )
+
+
+def decode_meeting_access_token(token):
+    payload = jwt.decode(
+        token,
+        current_app.config.get('SECRET_KEY'),
+        algorithms=['HS256']
+    )
+    if payload.get('token_type') != 'meeting_access':
+        raise Exception('Invalid meeting token type.')
+    return payload

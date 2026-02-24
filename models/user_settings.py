@@ -123,12 +123,15 @@ def get_user_settings(user_id):
     return settings.to_dict() if settings else None
 
 
-def get_or_create_user_settings(user_id):
+def get_or_create_user_settings(user_id, detected_timezone=None):
     settings = UserSettings.query.filter_by(user_id=user_id).first()
     if settings:
         return settings
 
-    settings = UserSettings(user_id=user_id, **default_settings_payload())
+    payload = default_settings_payload()
+    if detected_timezone and is_valid_timezone(detected_timezone):
+        payload["timezone"] = detected_timezone
+    settings = UserSettings(user_id=user_id, **payload)
     db.session.add(settings)
     db.session.commit()
     return settings

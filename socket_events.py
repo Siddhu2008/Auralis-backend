@@ -4,6 +4,7 @@ import os
 import wave
 import uuid
 from utils.transcriber import transcribe_audio
+import eventlet
 from utils.summarizer import summarize_text
 from models.meeting import create_meeting
 from utils.ai_response import generate_avatar_chat
@@ -19,7 +20,69 @@ room_host_ids = {} # NEW: Track host user_id
 room_audio_buffers = {}
 live_transcripts = {}
 proxy_states = {} # Track if user has proxy enabled: proxy_states[sid] = True/False
+room_cleanup_tasks = {} # room_id -> greenlet
 "NO_RESPONSE_NEEDED" # Sentinel for AI Proxy
+
+def _schedule_room_cleanup(room):
+    if room_cleanup_tasks.get(room):
+        return
+
+    def cleanup():
+        try:
+            users = rooms.get(room, [])
+            if users:
+                return
+
+            # Trigger Auto-Summarization
+            if room in live_transcripts and live_transcripts[room]:
+                full_text = " ".join(live_transcripts[room])
+                if len(full_text) > 50:
+                    print(f"[AI] Room {room} empty after grace. Generating automatic summary...")
+
+                    def auto_summarize():
+                        try:
+                            summary = summarize_text(full_text)
+                            host_id = room_host_ids.get(room)
+                            if host_id:
+                                create_meeting(
+                                    user_id=host_id,
+                                    room_id=room,
+                                    title=f"AI Summary: {room}",
+                                    transcript=full_text,
+                                    summary=summary,
+                                    duration='Automated'
+                                )
+                                print(f"[AI] Summary saved for room {room}")
+                        except Exception as ex:
+                            print(f"[AI] Auto-summary failed: {ex}")
+
+                    eventlet.spawn(auto_summarize)
+
+            if room in rooms:
+                del rooms[room]
+            if room in room_hosts:
+                del room_hosts[room]
+            if room in room_user_details:
+                del room_user_details[room]
+            if room in room_host_ids:
+                del room_host_ids[room]
+            if room in room_audio_buffers:
+                del room_audio_buffers[room]
+            if room in live_transcripts:
+                del live_transcripts[room]
+            print(f"Room {room} cleaned up after grace period.")
+        finally:
+            room_cleanup_tasks.pop(room, None)
+
+    room_cleanup_tasks[room] = eventlet.spawn_after(30, cleanup)
+
+def _cancel_room_cleanup(room):
+    task = room_cleanup_tasks.pop(room, None)
+    if task:
+        try:
+            task.kill()
+        except Exception:
+            pass
 
 def register_socket_events(socketio):
     @socketio.on('connect')
@@ -52,31 +115,8 @@ def register_socket_events(socketio):
                         emit('role_assigned', {'role': 'host'}, to=new_host) # Notify new host
                         print(f"Host left. New host for {room} is {new_host}")
                     else:
-                        # Trigger Auto-Summarization
-                        if room in live_transcripts and live_transcripts[room]:
-                            full_text = " ".join(live_transcripts[room])
-                            if len(full_text) > 50: # Only summarize meaningful content
-                                print(f"[AI] Room {room} is empty. Generating automatic summary...")
-                                def auto_summarize():
-                                    try:
-                                        summary = summarize_text(full_text)
-                                        host_id = room_host_ids.get(room)
-                                        if host_id:
-                                            create_meeting(
-                                                user_id=host_id,
-                                                room_id=room,
-                                                title=f"AI Summary: {room}",
-                                                transcript=full_text,
-                                                summary=summary,
-                                                duration='Automated'
-                                            )
-                                            print(f"[AI] Summary saved for room {room}")
-                                    except Exception as ex:
-                                        print(f"[AI] Auto-summary failed: {ex}")
-                                
-                                eventlet.spawn(auto_summarize)
-
-                        print(f"Room {room} connection list emptied.")
+                        _schedule_room_cleanup(room)
+                        print(f"Room {room} empty; scheduled cleanup grace period.")
 
     @socketio.on('join_room')
     def handle_join_room(data):
@@ -85,6 +125,8 @@ def register_socket_events(socketio):
         user_id = data.get('user_id')
 
         if not room: return
+
+        _cancel_room_cleanup(room)
         
         print(f"DEBUG: join_room. Room: '{room}', User: '{user_name}', ID: {user_id}")
         print(f"DEBUG: Global Status - sessions: {list(room_host_ids.keys())}, active_hosts: {list(room_hosts.keys())}")
