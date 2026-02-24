@@ -5,6 +5,7 @@ from database import db
 THEME_VALUES = {"dark", "light"}
 ASSISTANT_TONE_VALUES = {"professional", "friendly", "executive", "concise"}
 ASSISTANT_RESPONSE_LENGTH_VALUES = {"short", "medium", "detailed"}
+ASSISTANT_AUTONOMY_VALUES = {"suggest_only", "assisted", "full"}
 LANGUAGE_VALUES = {"english", "hindi", "spanish", "french", "german"}
 PLATFORM_VALUES = {"zoom", "google meet", "custom"}
 WEEK_DAY_VALUES = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}
@@ -17,6 +18,7 @@ def default_settings_payload():
         "font_size": 100,
         "assistant_tone": "professional",
         "assistant_response_length": "medium",
+        "assistant_autonomy_level": "assisted",
         "daily_briefing_enabled": True,
         "auto_followups_enabled": True,
         "default_meeting_duration": 30,
@@ -31,6 +33,7 @@ def default_settings_payload():
         "email_auto_categorize": True,
         "email_draft_suggestions": True,
         "require_email_approval": True,
+        "trusted_contacts": [],
         "notifications_enabled": True,
         "email_notifications_enabled": True,
         "timezone": "UTC",
@@ -48,6 +51,7 @@ class UserSettings(db.Model):
     font_size = db.Column(db.Integer, nullable=False, default=100)
     assistant_tone = db.Column(db.String(20), nullable=False, default="professional")
     assistant_response_length = db.Column(db.String(20), nullable=False, default="medium")
+    assistant_autonomy_level = db.Column(db.String(20), nullable=False, default="assisted")
     daily_briefing_enabled = db.Column(db.Boolean, nullable=False, default=True)
     auto_followups_enabled = db.Column(db.Boolean, nullable=False, default=True)
     default_meeting_duration = db.Column(db.Integer, nullable=False, default=30)
@@ -62,6 +66,7 @@ class UserSettings(db.Model):
     email_auto_categorize = db.Column(db.Boolean, nullable=False, default=True)
     email_draft_suggestions = db.Column(db.Boolean, nullable=False, default=True)
     require_email_approval = db.Column(db.Boolean, nullable=False, default=True)
+    trusted_contacts = db.Column(db.JSON, nullable=False, default=[])
     notifications_enabled = db.Column(db.Boolean, nullable=False, default=True)
     email_notifications_enabled = db.Column(db.Boolean, nullable=False, default=True)
     timezone = db.Column(db.String(64), nullable=False, default="UTC")
@@ -78,6 +83,7 @@ class UserSettings(db.Model):
             "font_size": self.font_size,
             "assistant_tone": self.assistant_tone,
             "assistant_response_length": self.assistant_response_length,
+            "assistant_autonomy_level": self.assistant_autonomy_level,
             "daily_briefing_enabled": self.daily_briefing_enabled,
             "auto_followups_enabled": self.auto_followups_enabled,
             "default_meeting_duration": self.default_meeting_duration,
@@ -92,6 +98,7 @@ class UserSettings(db.Model):
             "email_auto_categorize": self.email_auto_categorize,
             "email_draft_suggestions": self.email_draft_suggestions,
             "require_email_approval": self.require_email_approval,
+            "trusted_contacts": self.trusted_contacts or [],
             "notifications_enabled": self.notifications_enabled,
             "email_notifications_enabled": self.email_notifications_enabled,
             "timezone": self.timezone,
@@ -204,6 +211,10 @@ def validate_settings_update(data):
         if as_lower_str("assistant_response_length") not in ASSISTANT_RESPONSE_LENGTH_VALUES:
             errors["assistant_response_length"] = f"assistant_response_length must be one of {sorted(ASSISTANT_RESPONSE_LENGTH_VALUES)}"
 
+    if "assistant_autonomy_level" in data:
+        if as_lower_str("assistant_autonomy_level") not in ASSISTANT_AUTONOMY_VALUES:
+            errors["assistant_autonomy_level"] = f"assistant_autonomy_level must be one of {sorted(ASSISTANT_AUTONOMY_VALUES)}"
+
     if "default_meeting_duration" in data:
         val = data.get("default_meeting_duration")
         if not isinstance(val, int) or val not in (30, 45, 60):
@@ -236,6 +247,11 @@ def validate_settings_update(data):
         val = data.get("buffer_time_minutes")
         if not isinstance(val, int) or val < 0 or val > 180:
             errors["buffer_time_minutes"] = "buffer_time_minutes must be between 0 and 180"
+
+    if "trusted_contacts" in data:
+        val = data.get("trusted_contacts")
+        if not isinstance(val, list) or any(not isinstance(item, str) or not item.strip() for item in val):
+            errors["trusted_contacts"] = "trusted_contacts must be a string list"
 
     bool_fields = [
         "daily_briefing_enabled",
@@ -275,6 +291,7 @@ def update_user_settings(user_id, payload):
         "theme_mode",
         "assistant_tone",
         "assistant_response_length",
+        "assistant_autonomy_level",
         "default_meeting_platform",
         "language",
     }
@@ -283,6 +300,12 @@ def update_user_settings(user_id, payload):
             normalized_payload[key] = normalized_payload[key].strip().lower()
 
     for key, value in normalized_payload.items():
+        if key == "trusted_contacts" and isinstance(value, list):
+            value = sorted({
+                str(item).strip().lower()
+                for item in value
+                if isinstance(item, str) and item.strip()
+            })
         if hasattr(settings, key):
             setattr(settings, key, value)
 

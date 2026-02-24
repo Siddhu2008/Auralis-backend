@@ -28,13 +28,23 @@ from utils.jwt_handler import decode_token
 from utils.email_handler import send_email_otp, send_notification_email
 from utils.vector_store import vector_store
 from utils.ai_response import generate_answer
-from models.meeting import create_meeting, get_user_meetings, get_meeting_by_id, delete_meeting
+from models.meeting import create_meeting, get_user_meetings, get_meeting_by_id, delete_meeting, mark_meeting_completed
 from models.schedule import create_schedule, get_user_schedules, delete_schedule
 from models.notification import create_notification, get_user_notifications, mark_as_read
 from models.user_settings import get_or_create_user_settings
+from models.user import User
+from models.user_settings import create_default_settings_for_user
+from models.email import create_email_entry, get_user_emails, get_email_metrics
+from models.ai_memory import add_memory
+from models.task import create_task, get_task_metrics, get_user_tasks
+from utils.email_handler import send_email_custom
+from utils.assistant_intelligence import categorize_email, extract_action_items
 
 from database import db, init_db, ensure_database_schema
 from flask_migrate import Migrate
+import models.email  # noqa: F401
+import models.ai_memory  # noqa: F401
+import models.task  # noqa: F401
 
 load_dotenv()
 
@@ -43,11 +53,18 @@ app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'default_secret_key')
 init_db(app)
 ensure_database_schema(app)
 
+cors_origins_env = os.getenv("CORS_ORIGINS", "").strip()
 FRONTEND_ORIGINS = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "https://auralis-frontend.vercel.app"
+    origin.strip()
+    for origin in cors_origins_env.split(",")
+    if origin.strip()
 ]
+if not FRONTEND_ORIGINS:
+    FRONTEND_ORIGINS = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "https://auralis-frontend.vercel.app",
+    ]
 CORS(app, resources={r"/*": {"origins": FRONTEND_ORIGINS}}, supports_credentials=True)
 socketio = SocketIO(
     app, 
@@ -65,6 +82,25 @@ app.register_blueprint(assistant_bp, url_prefix='/api/assistant')
 app.register_blueprint(profile_bp, url_prefix='/api/profile')
 app.register_blueprint(settings_bp, url_prefix='/api/settings')
 app.register_blueprint(meeting_bp, url_prefix='/api/v2/meetings')
+
+
+def _normalize_email(value):
+    return (value or "").strip().lower()
+
+
+def _can_auto_send_email(settings, recipient, approved):
+    autonomy = (settings.assistant_autonomy_level or "assisted").lower()
+    recipient_norm = _normalize_email(recipient)
+    trusted = {
+        _normalize_email(item)
+        for item in (settings.trusted_contacts or [])
+        if isinstance(item, str)
+    }
+    if approved:
+        return True
+    if autonomy == "full" and recipient_norm and recipient_norm in trusted:
+        return True
+    return False
 
 
 @app.errorhandler(HTTPException)
@@ -138,6 +174,87 @@ def health_check():
         "service": "AURALIS Backend",
         "version": "1.0.0"
     }), 200
+
+@app.route('/api/dashboard/overview', methods=['GET'])
+def dashboard_overview():
+    auth_header = request.headers.get('Authorization')
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return jsonify({"error": "Unauthorized"}), 401
+    token = auth_header.split(' ')[1]
+    try:
+        payload = decode_token(token)
+        user_id = payload['user_id']
+        meetings = get_user_meetings(user_id)
+        completed_meetings = [m for m in meetings if (m.get("status") or "completed") == "completed"]
+        weekly = meetings[:20]
+        weekly_hours = 0.0
+        for m in weekly:
+            duration = (m.get("duration") or "").lower().replace(" ", "")
+            if duration.endswith("m"):
+                try:
+                    weekly_hours += int(duration[:-1]) / 60.0
+                except Exception:
+                    pass
+            elif duration.endswith("h"):
+                try:
+                    weekly_hours += float(duration[:-1])
+                except Exception:
+                    pass
+        return jsonify({
+            "meetings_this_week": len(weekly),
+            "completed_meetings": len(completed_meetings),
+            "weekly_meeting_hours": round(weekly_hours, 2),
+            "task_metrics": get_task_metrics(user_id),
+            "email_metrics": get_email_metrics(user_id),
+            "pending_tasks": get_user_tasks(user_id, include_completed=False, limit=10),
+            "ai_usage": {
+                "assistant_queries_last_7d": 0,
+                "summaries_generated": len([m for m in meetings if m.get("summary")]),
+            }
+        }), 200
+    except Exception:
+        return jsonify({"error": "Failed to build dashboard overview"}), 500
+
+@app.route('/api/register', methods=['POST'])
+def register_user():
+    data = request.get_json(silent=True) or {}
+    name = (data.get('name') or '').strip()
+    email = (data.get('email') or '').strip().lower()
+    password = data.get('password') or ''
+    if not name or not email or not password:
+        return jsonify({"error": "name, email and password are required"}), 400
+    if len(password) < 8:
+        return jsonify({"error": "password must be at least 8 characters"}), 400
+
+    existing = User.query.filter_by(email=email).first()
+    if existing:
+        return jsonify({"error": "Email already registered"}), 400
+
+    try:
+        user = User(email=email, name=name, provider='email')
+        user.set_password(password)
+        db.session.add(user)
+        db.session.commit()
+        create_default_settings_for_user(user.id)
+        jwt_token = generate_token(user_id=user.id, email=user.email, name=user.name)
+        return jsonify({"token": jwt_token, "user": user.to_dict()}), 201
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": "Failed to register user"}), 500
+
+@app.route('/api/login', methods=['POST'])
+def login_user():
+    data = request.get_json(silent=True) or {}
+    email = (data.get('email') or '').strip().lower()
+    password = data.get('password') or ''
+    if not email or not password:
+        return jsonify({"error": "email and password are required"}), 400
+
+    user = User.query.filter_by(email=email).first()
+    if not user or not user.verify_password(password):
+        return jsonify({"error": "Invalid credentials"}), 401
+    jwt_token = generate_token(user_id=user.id, email=user.email, name=user.name, profile_image=user.profile_image, provider=user.provider)
+    return jsonify({"token": jwt_token, "user": user.to_dict()}), 200
 
 # Meeting API Endpoints
 @app.route('/api/meetings', methods=['GET'])
@@ -314,6 +431,38 @@ def delete_meeting_endpoint(meeting_id):
     except Exception as e:
         return jsonify({"error": "Invalid token"}), 401
 
+@app.route('/api/meetings/<meeting_id>/end', methods=['POST'])
+def end_meeting(meeting_id):
+    auth_header = request.headers.get('Authorization')
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return jsonify({"error": "Unauthorized"}), 401
+    token = auth_header.split(' ')[1]
+    try:
+        payload = decode_token(token)
+        user_id = payload['user_id']
+        existing = get_meeting_by_id(meeting_id, user_id)
+        if not existing:
+            return jsonify({"error": "Meeting not found"}), 404
+        body = request.get_json(silent=True) or {}
+        transcript = body.get('transcript', existing.get('transcript') or '')
+        summary = body.get('summary') or (summarize_text(transcript) if transcript else "No summary available.")
+        action_items = body.get('action_items') or extract_action_items(f"{summary}\n{transcript}")
+        updated = mark_meeting_completed(
+            meeting_id=meeting_id,
+            user_id=user_id,
+            transcript=transcript,
+            summary=summary,
+            action_items=action_items,
+            ended_at=datetime.utcnow(),
+        )
+        for item in action_items:
+            title = item.get("title") if isinstance(item, dict) else str(item)
+            if title:
+                create_task(user_id, title, source_type="meeting", source_id=meeting_id)
+        return jsonify({"meeting": updated, "status": "completed"}), 200
+    except Exception:
+        return jsonify({"error": "Failed to end meeting"}), 500
+
 @app.route('/api/schedules', methods=['GET'])
 def get_schedules():
     auth_header = request.headers.get('Authorization')
@@ -414,7 +563,70 @@ def mark_read(notif_id):
         return jsonify({"success": success}), 200
     except: return jsonify({"error": "Invalid token"}), 401
 
+@app.route('/api/notifications/<notif_id>/read', methods=['PUT'])
+def mark_read_put(notif_id):
+    return mark_read(notif_id)
+
+@app.route('/api/email/send', methods=['POST'])
+def email_send():
+    auth_header = request.headers.get('Authorization')
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return jsonify({"error": "Unauthorized"}), 401
+    token = auth_header.split(' ')[1]
+    try:
+        payload = decode_token(token)
+        user_id = payload['user_id']
+    except:
+        return jsonify({"error": "Invalid token"}), 401
+
+    data = request.get_json(silent=True) or {}
+    recipient = (data.get('to') or '').strip()
+    subject = (data.get('subject') or 'Message from Auralis').strip()
+    body = (data.get('body') or '').strip()
+    approved = bool(data.get('approved', False))
+    if not recipient or not body:
+        return jsonify({"error": "to and body are required"}), 400
+
+    settings = get_or_create_user_settings(user_id)
+    if settings.require_email_approval and not _can_auto_send_email(settings, recipient, approved):
+        return jsonify({"error": "Email requires explicit approval"}), 400
+
+    try:
+        send_email_custom(recipient, subject, body)
+        category = categorize_email(subject, body)
+        summary = summarize_text(body) if len(body) > 80 else body
+        row = create_email_entry(
+            user_id=user_id,
+            subject=subject,
+            body=body,
+            summary=summary,
+            recipient=recipient,
+            direction='outgoing',
+            category=category,
+            approved=approved,
+        )
+        add_memory(user_id, f"EMAIL_DRAFT: {subject} | {summary}")
+        for item in extract_action_items(f"{subject}\n{body}"):
+            create_task(user_id, item["title"], source_type="email", source_id=row["id"])
+        return jsonify({"email": row, "status": "sent"}), 200
+    except Exception as e:
+        return jsonify({"error": "Failed to send email"}), 500
+
+@app.route('/api/email/list', methods=['GET'])
+def email_list():
+    auth_header = request.headers.get('Authorization')
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return jsonify({"error": "Unauthorized"}), 401
+    token = auth_header.split(' ')[1]
+    try:
+        payload = decode_token(token)
+        user_id = payload['user_id']
+        emails = get_user_emails(user_id)
+        return jsonify({"emails": emails}), 200
+    except:
+        return jsonify({"error": "Invalid token"}), 401
+
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
-    debug = os.getenv('DEBUG', 'True').lower() == 'true'
+    debug = os.getenv('DEBUG', 'False').lower() == 'true'
     socketio.run(app, host='0.0.0.0', port=port, debug=debug)

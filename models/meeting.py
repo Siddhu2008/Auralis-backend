@@ -80,3 +80,19 @@ def delete_meeting(meeting_id, user_id):
         db.session.commit()
         return True
     return False
+
+
+def mark_meeting_completed(meeting_id, user_id, transcript=None, summary=None, action_items=None, ended_at=None):
+    meeting = Meeting.query.filter_by(id=meeting_id, user_id=user_id).first()
+    if not meeting:
+        return None
+    if transcript is not None:
+        meeting.transcript = transcript
+    if summary is not None:
+        meeting.summary = summary
+    if action_items is not None:
+        meeting.action_items = action_items
+    meeting.status = 'completed'
+    meeting.ended_at = ended_at or datetime.utcnow()
+    db.session.commit()
+    return meeting.to_dict()
