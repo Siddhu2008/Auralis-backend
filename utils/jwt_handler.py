@@ -30,7 +30,7 @@ def decode_token(token):
     Decodes a JWT token. Returns the payload or error message.
     """
     print(f"[JWT] Decoding token: {token[:10]}... Debug: {os.getenv('DEBUG')}")
-    if token == "mock_token" and os.getenv('DEBUG', 'True').lower() == 'true':
+    if token == "mock_token" and os.getenv('DEBUG', 'False').lower() == 'true':
         return {'user_id': 'mock_user', 'email': 'test@example.com'}
     try:
         payload = jwt.decode(

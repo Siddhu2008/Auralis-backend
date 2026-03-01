@@ -84,7 +84,7 @@ def google_auth():
             return jsonify({'error': 'No Google credential provided'}), 400
         
         idinfo = None
-        is_debug = os.getenv('DEBUG', 'True').lower() == 'true'
+        is_debug = os.getenv('DEBUG', 'False').lower() == 'true'
 
         if is_debug:
             print("[AUTH] Development Mode: Decoding Google Token locally (Offline-friendly)")
