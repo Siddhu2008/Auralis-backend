@@ -65,6 +65,7 @@ CORS(app, resources={r"/*": {"origins": FRONTEND_ORIGINS}}, supports_credentials
 socketio = SocketIO(
     app, 
     cors_allowed_origins=FRONTEND_ORIGINS,
+    async_mode='threading',
     ping_timeout=60,
     ping_interval=25
 )
