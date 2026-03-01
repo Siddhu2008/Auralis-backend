@@ -1,8 +1,4 @@
 import os
-import eventlet
-eventlet.monkey_patch()
-
-os.environ['EVENTLET_NO_GREENDNS'] = 'yes' # Force system DNS to avoid Lookup timed out on Windows
 
 import dns.resolver
 resolver = dns.resolver.Resolver()
@@ -69,7 +65,6 @@ CORS(app, resources={r"/*": {"origins": FRONTEND_ORIGINS}}, supports_credentials
 socketio = SocketIO(
     app, 
     cors_allowed_origins=FRONTEND_ORIGINS,
-    async_mode='eventlet',
     ping_timeout=60,
     ping_interval=25
 )
@@ -113,13 +108,7 @@ def handle_unexpected_exception(error):
     print(f"[UNHANDLED ERROR] {error}")
     return jsonify({"error": "Internal server error"}), 500
 
-@app.after_request
-def add_security_headers(response):
-    # Set COOP to allow Google OAuth popups to communicate back to the opener
-    response.headers['Cross-Origin-Opener-Policy'] = 'same-origin-allow-popups'
-    # Set COEP to allow cross-origin embeddings if needed, or stick to safe defaults
-    response.headers['Cross-Origin-Embedder-Policy'] = 'unsafe-none'
-    return response
+
 
 @app.route('/api/ai/summarize', methods=['POST'])
 def ai_summarize():

@@ -4,10 +4,6 @@ import sys
 # Add backend directory to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Pre-monkey patch for eventlet DNS issues on Windows
-import eventlet
-eventlet.monkey_patch()
-os.environ['EVENTLET_NO_GREENDNS'] = 'yes'
 
 from dotenv import load_dotenv
 load_dotenv()

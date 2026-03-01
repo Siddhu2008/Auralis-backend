@@ -1,7 +1,4 @@
 import os
-import eventlet
-eventlet.monkey_patch()
-os.environ['EVENTLET_NO_GREENDNS'] = 'yes'
 
 from google.genai import Client
 from dotenv import load_dotenv

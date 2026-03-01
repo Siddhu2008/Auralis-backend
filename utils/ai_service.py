@@ -1,5 +1,5 @@
 import os
-import eventlet
+import threading
 from datetime import datetime
 from models.schedule import Schedule
 from database import db
@@ -28,7 +28,8 @@ class AIService:
             }, room=room_id)
             del self.absence_timers[timer_key]
 
-        timer = eventlet.spawn_after(120, on_timeout)
+        timer = threading.Timer(120, on_timeout)
+        timer.start()
         self.absence_timers[timer_key] = timer
 
     def cancel_absence_timer(self, room_id, user_id):

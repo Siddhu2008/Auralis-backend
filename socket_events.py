@@ -4,7 +4,7 @@ import os
 import wave
 import uuid
 from utils.transcriber import transcribe_audio
-import eventlet
+import threading
 from utils.summarizer import summarize_text
 from models.meeting import create_meeting
 from utils.ai_response import generate_avatar_chat
@@ -56,7 +56,7 @@ def _schedule_room_cleanup(room):
                         except Exception as ex:
                             print(f"[AI] Auto-summary failed: {ex}")
 
-                    eventlet.spawn(auto_summarize)
+                    threading.Thread(target=auto_summarize).start()
 
             if room in rooms:
                 del rooms[room]
@@ -74,13 +74,15 @@ def _schedule_room_cleanup(room):
         finally:
             room_cleanup_tasks.pop(room, None)
 
-    room_cleanup_tasks[room] = eventlet.spawn_after(30, cleanup)
+    task = threading.Timer(30, cleanup)
+    task.start()
+    room_cleanup_tasks[room] = task
 
 def _cancel_room_cleanup(room):
     task = room_cleanup_tasks.pop(room, None)
     if task:
         try:
-            task.kill()
+            task.cancel()
         except Exception:
             pass
 
