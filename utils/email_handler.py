@@ -37,20 +37,15 @@ def _send_raw_email(recipient_email, subject, body_html, attachments=None):
     retry_delay = 2
     host = 'smtp.gmail.com'
     
-    try:
-        ip = socket.gethostbyname(host)
-    except Exception:
-        ip = "192.178.211.108" # Hardcoded fallback
-
     for attempt in range(max_retries):
         try:
             server = None
             try:
                 # Try Port 587
-                server = smtplib.SMTP(ip, 587, timeout=20)
-                server.ehlo(host)
+                server = smtplib.SMTP(host, 587, timeout=20)
+                server.ehlo()
                 server.starttls()
-                server.ehlo(host)
+                server.ehlo()
                 server.login(sender_email, sender_password)
                 server.sendmail(sender_email, recipient_email, msg.as_string())
                 server.quit()
@@ -60,8 +55,8 @@ def _send_raw_email(recipient_email, subject, body_html, attachments=None):
                 if server: 
                     try: server.close()
                     except: pass
-                server = smtplib.SMTP_SSL(ip, 465, timeout=20)
-                server.ehlo(host)
+                server = smtplib.SMTP_SSL(host, 465, timeout=20)
+                server.ehlo()
                 server.login(sender_email, sender_password)
                 server.sendmail(sender_email, recipient_email, msg.as_string())
                 server.quit()
