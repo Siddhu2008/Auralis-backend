@@ -348,10 +348,10 @@ def create_new_meeting():
         if settings.notifications_enabled:
             create_notification(user_id, f"Meeting saved: {meeting.get('title')}", type='success')
         
-        # Email Notification (optional, but requested by user)
-        # Note: we need the email from payload
+        # Email Notification (optional)
         user_email = payload.get('email')
         if user_email and settings.email_notifications_enabled:
+            # We use _ to ignore the error message here as it's not critical
             send_notification_email(user_email, meeting.get('title'), "now", type='meeting')
 
         return jsonify({"meeting": meeting}), 201
@@ -590,7 +590,10 @@ def email_send():
         return jsonify({"error": "Email requires explicit approval"}), 400
 
     try:
-        send_email_custom(recipient, subject, body)
+        ok, err = send_email_custom(recipient, subject, body)
+        if not ok:
+            print(f"[ERROR] Custom email failed: {err}")
+            
         category = categorize_email(subject, body)
         summary = summarize_text(body) if len(body) > 80 else body
         row = create_email_entry(

@@ -25,13 +25,17 @@ def send_otp():
         otp = generate_otp()
         store_otp(email, otp)
         
-        # Send Email in background to avoid Render proxy timeouts (30s)
+        # Send Email in background
         import threading
-        thread = threading.Thread(target=send_email_otp, args=(email, otp))
-        thread.start()
+        def _bg_send():
+            ok, err = send_email_otp(email, otp)
+            if not ok:
+                print(f"[ERROR] Background OTP Email failed for {email}: {err}")
+            else:
+                print(f"[SUCCESS] OTP Email sent to {email}")
+
+        threading.Thread(target=_bg_send).start()
         
-        # Always return success to frontend to stop loading spinner
-        # If email fails, it will be logged on server
         return jsonify({
             'message': 'OTP process initiated. Please check your email in a moment.',
             'email': email
@@ -39,6 +43,22 @@ def send_otp():
     except Exception as e:
         print(f"OTP Send Error: {e}")
         return jsonify({'error': 'Failed to process request', 'details': str(e)}), 500
+
+@auth_bp.route('/test-email', methods=['GET', 'POST'])
+def test_email():
+    """Diagnostic endpoint to test SMTP settings synchronously"""
+    email = request.args.get('email') or (request.json or {}).get('email')
+    if not email:
+        return jsonify({"error": "email parameter required"}), 400
+    
+    print(f"[DIAGNOSTIC] Testing email to {email}...")
+    success, message = send_email_otp(email, "TEST-1234")
+    
+    return jsonify({
+        "success": success,
+        "message": message,
+        "hint": "If it failed, ensure MAIL_USERNAME and MAIL_PASSWORD are set in Render and you are using an App Password if using Gmail."
+    }), 200 if success else 500
 
 @auth_bp.route('/verify-otp', methods=['POST'])
 def verify():
