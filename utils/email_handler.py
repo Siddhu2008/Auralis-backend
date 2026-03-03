@@ -5,58 +5,36 @@ import os
 import time
 import socket
 
+import resend
+
 def _send_raw_email(recipient_email, subject, body_html, attachments=None):
-    """Internal helper to send email with robust DNS/SMTP handling"""
-    sender_email = os.getenv('MAIL_USERNAME')
-    sender_password = os.getenv('MAIL_PASSWORD')
-    errors = []
+    """Internal helper to send email using Resend API"""
+    api_key = os.getenv('RESEND_API_KEY')
+    sender_email = os.getenv('MAIL_USERNAME', 'onboarding@resend.dev')
 
-    if not sender_email or not sender_password:
-        return False, "MAIL_USERNAME or MAIL_PASSWORD missing in env"
+    if not api_key:
+        return False, "RESEND_API_KEY missing in environment variables"
 
-    msg = MIMEMultipart()
-    msg['From'] = sender_email
-    msg['To'] = recipient_email
-    msg['Subject'] = subject
-    msg.attach(MIMEText(body_html, 'html'))
-    
-    if attachments:
-        from email.mime.base import MIMEBase
-        from email import encoders
-        for filename, content in attachments:
-            part = MIMEBase('application', 'octet-stream')
-            part.set_payload(content)
-            encoders.encode_base64(part)
-            part.add_header('Content-Disposition', f'attachment; filename={filename}')
-            msg.attach(part)
+    resend.api_key = api_key
 
-    max_retries = 2
-    host = 'smtp.gmail.com'
-    
-    for attempt in range(max_retries):
-        # Try Port 587 (TLS)
-        try:
-            server = smtplib.SMTP(host, 587, timeout=7)
-            server.ehlo()
-            server.starttls()
-            server.login(sender_email, sender_password)
-            server.sendmail(sender_email, recipient_email, msg.as_string())
-            server.quit()
-            return True, "Success"
-        except Exception as e587:
-            errors.append(f"Port 587: {str(e587)}")
-            
-        # Try Port 465 (SSL)
-        try:
-            server = smtplib.SMTP_SSL(host, 465, timeout=7)
-            server.login(sender_email, sender_password)
-            server.sendmail(sender_email, recipient_email, msg.as_string())
-            server.quit()
-            return True, "Success"
-        except Exception as e465:
-            errors.append(f"Port 465: {str(e465)}")
+    try:
+        params = {
+            "from": f"Auralis <{sender_email}>",
+            "to": [recipient_email],
+            "subject": subject,
+            "html": body_html,
+        }
 
-    return False, " | ".join(errors)
+        if attachments:
+            params["attachments"] = [
+                {"filename": name, "content": list(content)} # resend expects content as bytes/list
+                for name, content in attachments
+            ]
+
+        r = resend.Emails.send(params)
+        return True, "Success"
+    except Exception as e:
+        return False, f"Resend API Error: {str(e)}"
 
 def send_email_otp(recipient_email, otp):
     """Sends login OTP email"""
