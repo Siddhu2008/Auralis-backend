@@ -2,9 +2,8 @@ from datetime import datetime
 from database import db
 
 
-class Meeting(db.Model):
-    __tablename__ = "meetings"
-    __table_args__ = {"extend_existing": True}
+class V2Meeting(db.Model):
+    __tablename__ = "v2_meetings"
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
@@ -28,7 +27,7 @@ class MeetingParticipant(db.Model):
     __tablename__ = "participants"
 
     id = db.Column(db.Integer, primary_key=True)
-    meeting_id = db.Column(db.Integer, db.ForeignKey("meetings.id"), nullable=False, index=True)
+    meeting_id = db.Column(db.Integer, db.ForeignKey("v2_meetings.id"), nullable=False, index=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
     display_name = db.Column(db.String(120), nullable=False)
     email = db.Column(db.String(200), nullable=True, index=True)
@@ -45,7 +44,7 @@ class MeetingTranscript(db.Model):
     __tablename__ = "meeting_transcripts"
 
     id = db.Column(db.Integer, primary_key=True)
-    meeting_id = db.Column(db.Integer, db.ForeignKey("meetings.id"), nullable=False, index=True)
+    meeting_id = db.Column(db.Integer, db.ForeignKey("v2_meetings.id"), nullable=False, index=True)
     speaker_name = db.Column(db.String(120), nullable=True)
     speaker_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     transcript_text = db.Column(db.Text, nullable=False)
@@ -56,7 +55,7 @@ class MeetingSummary(db.Model):
     __tablename__ = "meeting_summaries"
 
     id = db.Column(db.Integer, primary_key=True)
-    meeting_id = db.Column(db.Integer, db.ForeignKey("meetings.id"), nullable=False, unique=True, index=True)
+    meeting_id = db.Column(db.Integer, db.ForeignKey("v2_meetings.id"), nullable=False, unique=True, index=True)
     live_summary = db.Column(db.Text, nullable=True)
     final_summary = db.Column(db.Text, nullable=True)
     key_points = db.Column(db.JSON, default=list, nullable=False)
@@ -71,7 +70,7 @@ class MeetingRecording(db.Model):
     __tablename__ = "meeting_recordings"
 
     id = db.Column(db.Integer, primary_key=True)
-    meeting_id = db.Column(db.Integer, db.ForeignKey("meetings.id"), nullable=False, unique=True, index=True)
+    meeting_id = db.Column(db.Integer, db.ForeignKey("v2_meetings.id"), nullable=False, unique=True, index=True)
     storage_provider = db.Column(db.String(30), default="s3", nullable=False)
     recording_url = db.Column(db.String(1000), nullable=False)
     storage_key = db.Column(db.String(500), nullable=True)
@@ -84,7 +83,7 @@ class MeetingChatMessage(db.Model):
     __tablename__ = "meeting_chat_messages"
 
     id = db.Column(db.Integer, primary_key=True)
-    meeting_id = db.Column(db.Integer, db.ForeignKey("meetings.id"), nullable=False, index=True)
+    meeting_id = db.Column(db.Integer, db.ForeignKey("v2_meetings.id"), nullable=False, index=True)
     sender_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     sender_name = db.Column(db.String(120), nullable=False)
     message = db.Column(db.Text, nullable=False)
@@ -97,7 +96,7 @@ class MeetingActionItem(db.Model):
     __tablename__ = "meeting_action_items"
 
     id = db.Column(db.Integer, primary_key=True)
-    meeting_id = db.Column(db.Integer, db.ForeignKey("meetings.id"), nullable=False, index=True)
+    meeting_id = db.Column(db.Integer, db.ForeignKey("v2_meetings.id"), nullable=False, index=True)
     title = db.Column(db.String(500), nullable=False)
     assigned_to_name = db.Column(db.String(120), nullable=True)
     assigned_to_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
@@ -110,7 +109,7 @@ class MeetingDecision(db.Model):
     __tablename__ = "meeting_decisions"
 
     id = db.Column(db.Integer, primary_key=True)
-    meeting_id = db.Column(db.Integer, db.ForeignKey("meetings.id"), nullable=False, index=True)
+    meeting_id = db.Column(db.Integer, db.ForeignKey("v2_meetings.id"), nullable=False, index=True)
     decision_text = db.Column(db.Text, nullable=False)
     decided_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     created_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
@@ -120,7 +119,7 @@ class WaitingRoomEntry(db.Model):
     __tablename__ = "meeting_waiting_room_entries"
 
     id = db.Column(db.Integer, primary_key=True)
-    meeting_id = db.Column(db.Integer, db.ForeignKey("meetings.id"), nullable=False, index=True)
+    meeting_id = db.Column(db.Integer, db.ForeignKey("v2_meetings.id"), nullable=False, index=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     display_name = db.Column(db.String(120), nullable=False)
     email = db.Column(db.String(200), nullable=True, index=True)

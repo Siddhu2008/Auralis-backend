@@ -5,7 +5,7 @@ from flask import request
 from flask_socketio import emit, join_room, leave_room
 
 from database import db
-from meeting_system.models import Meeting, MeetingParticipant
+from meeting_system.models import V2Meeting, MeetingParticipant
 from meeting_system.services import append_transcript, persist_chat_message
 from utils.jwt_handler import decode_meeting_access_token
 
@@ -47,7 +47,7 @@ def register_meeting_socket_events(socketio):
         display_name = data.get("display_name") or data.get("name") or f"user-{user_id}"
         sid = request.sid
 
-        meeting = Meeting.query.get(meeting_id)
+        meeting = V2Meeting.query.get(meeting_id)
         if not meeting:
             emit("meeting:error", {"message": "Meeting not found"})
             return
@@ -251,7 +251,7 @@ def register_meeting_socket_events(socketio):
             return
 
         if action == "lock_meeting":
-            meeting = Meeting.query.get(meeting_id)
+            meeting = V2Meeting.query.get(meeting_id)
             if not meeting:
                 return
             meeting.is_locked = bool(data.get("value", True))
@@ -261,7 +261,7 @@ def register_meeting_socket_events(socketio):
             return
 
         if action == "end_for_all":
-            meeting = Meeting.query.get(meeting_id)
+            meeting = V2Meeting.query.get(meeting_id)
             if meeting:
                 meeting.status = "ended"
                 meeting.ended_at = datetime.utcnow()

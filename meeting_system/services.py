@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from database import db
 from meeting_system.models import (
-    Meeting,
+    V2Meeting,
     MeetingActionItem,
     MeetingChatMessage,
     MeetingDecision,
@@ -87,7 +87,7 @@ def create_scheduled_meeting(
     end_at, buffer_td = validate_schedule_window(scheduled_start_at, duration_minutes)
     ensure_no_schedule_conflict(host_user_id, scheduled_start_at, end_at, buffer_td)
 
-    meeting = Meeting(
+    meeting = V2Meeting(
         user_id=host_user_id,
         title=title,
         meeting_code=meeting_code,
