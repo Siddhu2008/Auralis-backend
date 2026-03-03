@@ -51,14 +51,35 @@ def test_email():
     if not email:
         return jsonify({"error": "email parameter required"}), 400
     
-    print(f"[DIAGNOSTIC] Testing email to {email}...")
-    success, message = send_email_otp(email, "TEST-1234")
+    import socket
+    results = {}
     
-    return jsonify({
-        "success": success,
-        "message": message,
-        "hint": "If it failed, ensure MAIL_USERNAME and MAIL_PASSWORD are set in Render and you are using an App Password if using Gmail."
-    }), 200 if success else 500
+    # 1. DNS Check
+    try:
+        host = 'smtp.gmail.com'
+        ip = socket.gethostbyname(host)
+        results['dns_lookup'] = {"host": host, "ip": ip, "status": "OK"}
+    except Exception as e:
+        results['dns_lookup'] = {"status": "FAILED", "error": str(e)}
+
+    # 2. Raw Socket Check
+    for port in [587, 465]:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(5)
+            s.connect(('smtp.gmail.com', port))
+            s.close()
+            results[f'socket_port_{port}'] = "CONNECTED"
+        except Exception as e:
+            results[f'socket_port_{port}'] = f"FAILED: {str(e)}"
+
+    # 3. SMTP Send Attempt
+    success, message = send_email_otp(email, "TEST-1234")
+    results['smtp_send'] = {"success": success, "message": message}
+    
+    results['hint'] = "If sockets FAILED, Render is blocking these ports. You MUST switch to an API-based provider like Resend or SendGrid."
+    
+    return jsonify(results), 200 if success else 500
 
 @auth_bp.route('/verify-otp', methods=['POST'])
 def verify():
