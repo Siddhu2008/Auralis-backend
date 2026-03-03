@@ -39,25 +39,33 @@ load_dotenv()
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'default_secret_key')
-init_db(app)
-ensure_database_schema(app)
+try:
+    init_db(app)
+    ensure_database_schema(app)
+except Exception as db_err:
+    print(f"[CRITICAL ERROR] Database initialization failed: {db_err}")
+    import traceback
+    print(traceback.format_exc())
+    # We continue so at least the health check can respond
 
+# CORS Configuration
+# Use specific origins for credentials support (Wildcard "*" doesn't work with credentials)
 cors_origins_env = os.getenv("CORS_ORIGINS", "").strip()
-FRONTEND_ORIGINS = [
-    origin.strip()
-    for origin in cors_origins_env.split(",")
-    if origin.strip()
-]
-if not FRONTEND_ORIGINS:
+if cors_origins_env:
+    FRONTEND_ORIGINS = [o.strip() for o in cors_origins_env.split(",") if o.strip()]
+else:
     FRONTEND_ORIGINS = [
+        "https://auralis-frontend.vercel.app",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-        "https://auralis-frontend.vercel.app",
     ]
+
+# Global CORS
 CORS(app, resources={r"/*": {"origins": FRONTEND_ORIGINS}}, supports_credentials=True)
+
 socketio = SocketIO(
     app, 
-    cors_allowed_origins=FRONTEND_ORIGINS,
+    cors_allowed_origins=FRONTEND_ORIGINS, 
     async_mode='threading',
     ping_timeout=60,
     ping_interval=25
@@ -71,6 +79,7 @@ app.register_blueprint(assistant_bp, url_prefix='/api/assistant')
 app.register_blueprint(profile_bp, url_prefix='/api/profile')
 app.register_blueprint(settings_bp, url_prefix='/api/settings')
 app.register_blueprint(meeting_bp, url_prefix='/api/v2/meetings')
+
 
 
 def _normalize_email(value):

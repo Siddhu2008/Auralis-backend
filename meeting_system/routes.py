@@ -274,7 +274,7 @@ def list_past_meetings():
         V2Meeting.query.filter(
             (V2Meeting.user_id == user_id) & (V2Meeting.status == "ended")
         )
-        .order_by(Meeting.ended_at.desc())
+        .order_by(V2Meeting.ended_at.desc())
         .all()
     )
     response = []
