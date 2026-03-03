@@ -18,8 +18,11 @@ def _send_raw_email(recipient_email, subject, body_html, attachments=None):
     resend.api_key = api_key
 
     try:
+        # For Sandbox/Onboarding, keep the sender simple
+        formatted_from = sender_email if "onboarding@resend.dev" in sender_email else f"Auralis <{sender_email}>"
+        
         params = {
-            "from": f"Auralis <{sender_email}>",
+            "from": formatted_from,
             "to": [recipient_email],
             "subject": subject,
             "html": body_html,
