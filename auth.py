@@ -44,42 +44,6 @@ def send_otp():
         print(f"OTP Send Error: {e}")
         return jsonify({'error': 'Failed to process request', 'details': str(e)}), 500
 
-@auth_bp.route('/test-email', methods=['GET', 'POST'])
-def test_email():
-    """Diagnostic endpoint to test SMTP settings synchronously"""
-    email = request.args.get('email') or (request.json or {}).get('email')
-    if not email:
-        return jsonify({"error": "email parameter required"}), 400
-    
-    import socket
-    results = {}
-    
-    # 1. DNS Check
-    try:
-        host = 'smtp.gmail.com'
-        ip = socket.gethostbyname(host)
-        results['dns_lookup'] = {"host": host, "ip": ip, "status": "OK"}
-    except Exception as e:
-        results['dns_lookup'] = {"status": "FAILED", "error": str(e)}
-
-    # 2. Raw Socket Check
-    for port in [587, 465]:
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(5)
-            s.connect(('smtp.gmail.com', port))
-            s.close()
-            results[f'socket_port_{port}'] = "CONNECTED"
-        except Exception as e:
-            results[f'socket_port_{port}'] = f"FAILED: {str(e)}"
-
-    # 3. SMTP Send Attempt
-    success, message = send_email_otp(email, "TEST-1234")
-    results['smtp_send'] = {"success": success, "message": message}
-    
-    results['hint'] = "If sockets FAILED, Render is blocking these ports. You MUST switch to an API-based provider like Resend or SendGrid."
-    
-    return jsonify(results), 200 if success else 500
 
 @auth_bp.route('/verify-otp', methods=['POST'])
 def verify():
