@@ -33,46 +33,45 @@ def _send_raw_email(recipient_email, subject, body_html, attachments=None):
             part.add_header('Content-Disposition', f'attachment; filename={filename}')
             msg.attach(part)
 
-    max_retries = 3
-    retry_delay = 2
+    max_retries = 2
+    retry_delay = 1
     host = 'smtp.gmail.com'
     
     for attempt in range(max_retries):
         try:
-            server = None
+            # Try Port 587 (TLS)
             try:
-                # Try Port 587
-                print(f"[SMTP] Attempting connection to {host} on port 587 (Attempt {attempt+1})")
-                server = smtplib.SMTP(host, 587, timeout=10)
+                print(f"[SMTP] Attempting Port 587 (Attempt {attempt+1})")
+                server = smtplib.SMTP(host, 587, timeout=7)
                 server.ehlo()
                 server.starttls()
-                server.ehlo()
                 server.login(sender_email, sender_password)
                 server.sendmail(sender_email, recipient_email, msg.as_string())
                 server.quit()
-                print(f"[SMTP] Email sent successfully to {recipient_email}")
+                print(f"[SMTP] Success via 587")
                 return True
             except Exception as e587:
                 print(f"[SMTP] Port 587 failed: {e587}")
-                # Fallback to Port 465
-                if server: 
-                    try: server.close()
-                    except: pass
-                print(f"[SMTP] Attempting connection to {host} on port 465 (Attempt {attempt+1})")
-                server = smtplib.SMTP_SSL(host, 465, timeout=10)
-                server.ehlo()
+                
+            # Try Port 465 (SSL)
+            try:
+                print(f"[SMTP] Attempting Port 465 (Attempt {attempt+1})")
+                server = smtplib.SMTP_SSL(host, 465, timeout=7)
                 server.login(sender_email, sender_password)
                 server.sendmail(sender_email, recipient_email, msg.as_string())
                 server.quit()
-                print(f"[SMTP] Email sent successfully via SSL to {recipient_email}")
+                print(f"[SMTP] Success via 465")
                 return True
+            except Exception as e465:
+                print(f"[SMTP] Port 465 failed: {e465}")
+
         except Exception as e:
-            print(f"[SMTP] Error on attempt {attempt+1}: {e}")
+            print(f"[SMTP] Critical Error on attempt {attempt+1}: {e}")
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
-            else:
-                print(f"Final email failure after {max_retries} attempts: {e}")
-                return False
+    
+    print(f"[SMTP] Final failure after {max_retries} attempts.")
+    return False
 
 def send_email_otp(recipient_email, otp):
     """Sends login OTP email"""

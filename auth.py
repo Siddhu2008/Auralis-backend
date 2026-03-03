@@ -25,15 +25,17 @@ def send_otp():
         otp = generate_otp()
         store_otp(email, otp)
         
-        # Send Email
-        email_sent = send_email_otp(email, otp)
+        # Send Email in background to avoid Render proxy timeouts (30s)
+        import threading
+        thread = threading.Thread(target=send_email_otp, args=(email, otp))
+        thread.start()
         
-        if email_sent:
-            return jsonify({'message': 'OTP sent to your email'}), 200
-        else:
-            # Fallback for dev mode/error
-            print(f" [AUTH DEBUG] OTP for {email}: {otp} ")
-            return jsonify({'message': 'Failed to send email (Check .env). OTP logged to console for Dev.'}), 200
+        # Always return success to frontend to stop loading spinner
+        # If email fails, it will be logged on server
+        return jsonify({
+            'message': 'OTP process initiated. Please check your email in a moment.',
+            'email': email
+        }), 200
     except Exception as e:
         print(f"OTP Send Error: {e}")
         return jsonify({'error': 'Failed to process request', 'details': str(e)}), 500
