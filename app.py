@@ -1,10 +1,3 @@
-import os
-
-import dns.resolver
-resolver = dns.resolver.Resolver()
-resolver.nameservers = ['8.8.8.8']
-dns.resolver.default_resolver = resolver
-
 from flask import Flask, jsonify, request
 from werkzeug.exceptions import HTTPException
 from datetime import datetime
@@ -37,7 +30,6 @@ from utils.email_handler import send_email_custom
 from utils.assistant_intelligence import categorize_email, extract_action_items
 
 from database import db, init_db, ensure_database_schema
-from flask_migrate import Migrate
 import models.email  # noqa: F401
 import models.ai_memory  # noqa: F401
 import models.task  # noqa: F401

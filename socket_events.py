@@ -20,7 +20,7 @@ room_host_ids = {} # NEW: Track host user_id
 room_audio_buffers = {}
 live_transcripts = {}
 proxy_states = {} # Track if user has proxy enabled: proxy_states[sid] = True/False
-room_cleanup_tasks = {} # room_id -> greenlet
+room_cleanup_tasks = {} # room_id -> threading.Timer
 "NO_RESPONSE_NEEDED" # Sentinel for AI Proxy
 
 def _schedule_room_cleanup(room):

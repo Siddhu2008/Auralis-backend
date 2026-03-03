@@ -10,7 +10,6 @@ google-auth==2.27.0
 google-auth-oauthlib==1.2.0
 google-auth-httplib2==0.2.0
 numpy>=1.24.0
-dnspython
 setuptools
 flask-sqlalchemy
 flask-migrate

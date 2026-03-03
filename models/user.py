@@ -15,12 +15,7 @@ class User(db.Model):
     role = db.Column(db.String(20), default='user')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
-    # Relationships
-    # Try both possible Meeting class locations for compatibility
-    try:
-        meetings = db.relationship('meeting_system.models.Meeting', backref='host', lazy=True)
-    except Exception:
-        meetings = db.relationship('models.meeting.Meeting', backref='host', lazy=True)
+    meetings = db.relationship('Meeting', backref='host', lazy=True)
     schedules = db.relationship('Schedule', backref='user', lazy=True)
     notifications = db.relationship('Notification', backref='user', lazy=True)
 
