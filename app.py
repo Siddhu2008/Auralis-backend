@@ -106,8 +106,14 @@ def handle_http_exception(error):
 
 @app.errorhandler(Exception)
 def handle_unexpected_exception(error):
+    import traceback
+    error_details = traceback.format_exc()
     print(f"[UNHANDLED ERROR] {error}")
-    return jsonify({"error": "Internal server error"}), 500
+    print(error_details)
+    return jsonify({
+        "error": "Internal server error",
+        "details": str(error) if app.debug else "Please check server logs"
+    }), 500
 
 
 

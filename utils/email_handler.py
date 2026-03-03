@@ -42,30 +42,36 @@ def _send_raw_email(recipient_email, subject, body_html, attachments=None):
             server = None
             try:
                 # Try Port 587
-                server = smtplib.SMTP(host, 587, timeout=20)
+                print(f"[SMTP] Attempting connection to {host} on port 587 (Attempt {attempt+1})")
+                server = smtplib.SMTP(host, 587, timeout=10)
                 server.ehlo()
                 server.starttls()
                 server.ehlo()
                 server.login(sender_email, sender_password)
                 server.sendmail(sender_email, recipient_email, msg.as_string())
                 server.quit()
+                print(f"[SMTP] Email sent successfully to {recipient_email}")
                 return True
-            except Exception:
+            except Exception as e587:
+                print(f"[SMTP] Port 587 failed: {e587}")
                 # Fallback to Port 465
                 if server: 
                     try: server.close()
                     except: pass
-                server = smtplib.SMTP_SSL(host, 465, timeout=20)
+                print(f"[SMTP] Attempting connection to {host} on port 465 (Attempt {attempt+1})")
+                server = smtplib.SMTP_SSL(host, 465, timeout=10)
                 server.ehlo()
                 server.login(sender_email, sender_password)
                 server.sendmail(sender_email, recipient_email, msg.as_string())
                 server.quit()
+                print(f"[SMTP] Email sent successfully via SSL to {recipient_email}")
                 return True
         except Exception as e:
+            print(f"[SMTP] Error on attempt {attempt+1}: {e}")
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
             else:
-                print(f"Final email failure: {e}")
+                print(f"Final email failure after {max_retries} attempts: {e}")
                 return False
 
 def send_email_otp(recipient_email, otp):
