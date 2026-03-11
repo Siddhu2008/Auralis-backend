@@ -1,22 +1,15 @@
 import os
-from google.genai import Client
+from utils.ai_service_unified import ai_service
 
-def get_client():
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        return None
-    return Client(api_key=api_key)
+_AI_UNAVAILABLE_MSG = "I'm experiencing connectivity issues with my AI service. Please try again in a moment."
 
 def generate_answer(context_chunks, question):
     """
     Generates an answer using Google Gemini based on the provided context.
     """
-    client = get_client()
-    if not client:
-        return "Error: GEMINI_API_KEY not found in environment variables."
-
     context_text = "\n\n".join([chunk['content'] for chunk in context_chunks])
     
+    # Build base prompt
     prompt = f"""
     You are 'Auralis AI', an intelligent assistant for the Auralis platform.
     
@@ -32,26 +25,23 @@ def generate_answer(context_chunks, question):
     
     Answer:
     """
+    # Add a random suffix to encourage variability
+    import random
+    suffixes = ["", " Please elaborate.", " Could you provide more details?", " Let me think about that."]
+    prompt += random.choice(suffixes)
     
     try:
-        response = client.models.generate_content(
-            model='gemini-flash-latest',
-            contents=prompt
-        )
-        return response.text
+        # Use our unified service which handles rotation and fallbacks automatically
+        result = ai_service.generate_content(prompt, model='gemini-2.5-flash')
+        return result or _AI_UNAVAILABLE_MSG
     except Exception as e:
         print(f"Gemini API Error: {e}")
-        # Fallback for testing
-        return "[Mock Answer] Based on the context, the budget is $50,000. (Generated because API call failed)."
+        return _AI_UNAVAILABLE_MSG
 
 def generate_avatar_chat(message, history=[], transcript=""):
     """
     Generates a response for the AI Avatar during a live meeting.
     """
-    client = get_client()
-    if not client:
-        return "I'm here, but I need my API key to talk! Please check the backend settings."
-
     prompt = f"""
     You are 'Auralis AI', a helpful digital participant in a live video meeting.
     Your tone is professional, concise, and collaborative.
@@ -67,11 +57,9 @@ def generate_avatar_chat(message, history=[], transcript=""):
     """
     
     try:
-        response = client.models.generate_content(
-            model='gemini-flash-latest',
-            contents=prompt
-        )
-        return response.text
+        # Use unified service
+        res = ai_service.generate_content(prompt, model='gemini-2.5-flash')
+        return res or "I'm listening and processing..."
     except Exception as e:
         print(f"Avatar Gemini Error: {e}")
         return "I'm having a bit of trouble connecting to my brain right now, but I'm still listening!"
@@ -80,10 +68,6 @@ def generate_proxy_response(user_name, user_profile, last_messages, transcript):
     """
     Generates a response on behalf of an absent or proxy-enabled user.
     """
-    client = get_client()
-    if not client:
-        return None
-
     prompt = f"""
     You are acting as a digital proxy for '{user_name}' in a live meeting.
     USER PROFILE CONTEXT: {user_profile or 'A professional participant.'}
@@ -102,12 +86,9 @@ def generate_proxy_response(user_name, user_profile, last_messages, transcript):
     """
     
     try:
-        response = client.models.generate_content(
-            model='gemini-flash-latest',
-            contents=prompt
-        )
-        text = response.text.strip()
-        if "NO_RESPONSE_NEEDED" in text:
+        # Use unified service
+        text = ai_service.generate_content(prompt, model='gemini-2.5-flash')
+        if text and "NO_RESPONSE_NEEDED" in text:
             return None
         return text
     except Exception as e:

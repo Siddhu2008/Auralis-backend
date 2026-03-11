@@ -2,14 +2,9 @@ import json
 import os
 import re
 from datetime import datetime, timedelta
-from google.genai import Client
+from utils.ai_service_unified import ai_service
 
-
-def _client():
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        return None
-    return Client(api_key=api_key)
+# Unified ai_service used
 
 
 def categorize_email(subject, body):
@@ -37,21 +32,19 @@ def extract_action_items(text):
 
 
 def ai_structured_chat(prompt, default_response):
-    client = _client()
-    if not client:
-        return {
-            "response": default_response,
-            "action": None,
-            "action_data": {},
-            "confidence": 0.5,
-        }
+    import time
     try:
-        res = client.models.generate_content(
-            model="gemini-flash-latest",
-            contents=prompt,
-            config={"response_mime_type": "application/json", "max_output_tokens": 900},
-        )
-        raw = (res.text or "").strip()
+        config = {"response_mime_type": "application/json", "max_output_tokens": 900}
+        raw = ai_service.generate_content(prompt, model="gemini-2.5-flash", config=config)
+        
+        # If rate-limited, wait briefly and retry once
+        if not raw:
+            time.sleep(3)
+            raw = ai_service.generate_content(prompt, model="gemini-2.5-flash", config=config)
+        
+        if not raw:
+            return normalize_chat_payload({}, default_response)
+
         if "```json" in raw:
             raw = raw.split("```json", 1)[1].split("```", 1)[0].strip()
         elif raw.startswith("```"):
@@ -59,12 +52,7 @@ def ai_structured_chat(prompt, default_response):
         data = json.loads(raw)
         return normalize_chat_payload(data, default_response)
     except Exception:
-        return {
-            "response": default_response,
-            "action": None,
-            "action_data": {},
-            "confidence": 0.5,
-        }
+        return normalize_chat_payload({}, default_response)
 
 
 def normalize_chat_payload(data, default_response="Done."):
@@ -186,10 +174,10 @@ def contextual_fallback_response(user_message, context):
                 "confidence": 0.7,
             }
 
-    # Generic but contextual fallback
+    # Final fallback - give a helpful professional response
     return {
-        "response": "I can help with scheduling, email drafting, meeting recaps, and task tracking. Ask for 'today agenda', 'yesterday activity', or 'summarize last meeting'.",
+        "response": "I'm ready to assist you. You can ask me to schedule a meeting, send an email, check your agenda, or help with tasks. What would you like to do?",
         "action": None,
         "action_data": {},
-        "confidence": 0.65,
+        "confidence": 0.5,
     }

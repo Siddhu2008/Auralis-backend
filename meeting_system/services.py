@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from database import db
 from meeting_system.models import (
-    V2Meeting,
+    Meeting,
     MeetingActionItem,
     MeetingChatMessage,
     MeetingDecision,
@@ -30,7 +30,7 @@ def _utc_now():
 def generate_unique_meeting_code(length=8):
     for _ in range(20):
         code = "".join(random.choice(MEETING_CODE_ALPHABET) for _ in range(length))
-        if not V2Meeting.query.filter_by(meeting_code=code).first():
+        if not Meeting.query.filter_by(meeting_code=code).first():
             return code
     raise RuntimeError("Could not generate a unique meeting code")
 
@@ -54,13 +54,13 @@ def validate_schedule_window(start_at, duration_minutes, buffer_minutes=10):
 
 def ensure_no_schedule_conflict(host_user_id, start_at, end_at, buffer_td):
     existing = (
-        V2Meeting.query.filter(
-            V2Meeting.user_id == host_user_id,
-            V2Meeting.status.in_(["scheduled", "live"]),
-            V2Meeting.scheduled_start_at.isnot(None),
-            V2Meeting.scheduled_end_at.isnot(None),
+        Meeting.query.filter(
+            Meeting.user_id == host_user_id,
+            Meeting.status.in_(["scheduled", "live"]),
+            Meeting.scheduled_start_at.isnot(None),
+            Meeting.scheduled_end_at.isnot(None),
         )
-        .order_by(V2Meeting.scheduled_start_at.asc())
+        .order_by(Meeting.scheduled_start_at.asc())
         .all()
     )
 
@@ -87,7 +87,7 @@ def create_scheduled_meeting(
     end_at, buffer_td = validate_schedule_window(scheduled_start_at, duration_minutes)
     ensure_no_schedule_conflict(host_user_id, scheduled_start_at, end_at, buffer_td)
 
-    meeting = V2Meeting(
+    meeting = Meeting(
         user_id=host_user_id,
         title=title,
         meeting_code=meeting_code,
@@ -208,7 +208,7 @@ def attach_recording(meeting_id, recording_url, storage_key=None, provider="s3",
 
 
 def complete_meeting(meeting_id, final_summary, tone=None, action_items=None, decisions=None):
-    meeting = V2Meeting.query.get(meeting_id)
+    meeting = Meeting.query.get(meeting_id)
     if not meeting:
         raise ValueError("Meeting not found.")
 
@@ -256,10 +256,10 @@ def _parse_iso_datetime(raw):
 def find_meeting_by_code_or_id(code_or_id):
     meeting = None
     if str(code_or_id).isdigit():
-        meeting = V2Meeting.query.get(int(code_or_id))
+        meeting = Meeting.query.get(int(code_or_id))
     if meeting:
         return meeting
-    return V2Meeting.query.filter_by(meeting_code=str(code_or_id).upper()).first()
+    return Meeting.query.filter_by(meeting_code=str(code_or_id).upper()).first()
 
 
 def serialize_meeting_bundle(meeting):
@@ -357,9 +357,9 @@ def get_reminder_targets(minutes_from_now=15):
     target_start = _utc_now() + timedelta(minutes=minutes_from_now)
     window_end = target_start + timedelta(minutes=1)
 
-    upcoming = V2Meeting.query.filter(
-        V2Meeting.status == "scheduled",
-        V2Meeting.scheduled_start_at >= target_start,
-        V2Meeting.scheduled_start_at < window_end,
+    upcoming = Meeting.query.filter(
+        Meeting.status == "scheduled",
+        Meeting.scheduled_start_at >= target_start,
+        Meeting.scheduled_start_at < window_end,
     ).all()
     return upcoming

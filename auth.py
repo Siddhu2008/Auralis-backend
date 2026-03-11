@@ -25,25 +25,18 @@ def send_otp():
         otp = generate_otp()
         store_otp(email, otp)
         
-        # Send Email in background
-        import threading
-        def _bg_send():
-            ok, err = send_email_otp(email, otp)
-            if not ok:
-                print(f"[ERROR] Background OTP Email failed for {email}: {err}")
-            else:
-                print(f"[SUCCESS] OTP Email sent to {email}")
-
-        threading.Thread(target=_bg_send).start()
+        # Send Email
+        email_sent = send_email_otp(email, otp)
         
-        return jsonify({
-            'message': 'OTP process initiated. Please check your email in a moment.',
-            'email': email
-        }), 200
+        if email_sent:
+            return jsonify({'message': 'OTP sent to your email'}), 200
+        else:
+            # Fallback for dev mode/error
+            print(f" [AUTH DEBUG] OTP for {email}: {otp} ")
+            return jsonify({'message': 'Failed to send email (Check .env). OTP logged to console for Dev.'}), 200
     except Exception as e:
         print(f"OTP Send Error: {e}")
         return jsonify({'error': 'Failed to process request', 'details': str(e)}), 500
-
 
 @auth_bp.route('/verify-otp', methods=['POST'])
 def verify():
@@ -64,11 +57,12 @@ def verify():
             if not user:
                 user = create_user(email=email, name=email.split('@')[0])
             else:
-                create_default_settings_for_user(user['id'])
+                create_default_settings_for_user(user.get('id', user.get('_id')))
             
             # Generate JWT with database user ID
-            token = generate_token(user_id=user['id'], email=user['email'])
-            return jsonify({'token': token, 'user': {'email': user['email'], 'name': user['name']}}), 200
+            user_id = user.get('id') or user.get('_id')
+            token = generate_token(user_id=user_id, email=user.get('email', email))
+            return jsonify({'token': token, 'user': {'email': user.get('email', email), 'name': user.get('name', '')}}), 200
         else:
             return jsonify({'error': 'Invalid or expired OTP'}), 401
     except Exception as e:
@@ -139,22 +133,25 @@ def google_auth():
             else:
                 # User exists by email, link Google ID if not present
                 # (Optional logic, for now just ensure they can log in)
-                create_default_settings_for_user(user['id'])
+                create_default_settings_for_user(user.get('id', user.get('_id')))
         else:
-            create_default_settings_for_user(user['id'])
+            create_default_settings_for_user(user.get('id', user.get('_id')))
         
         # Generate our app's JWT
         user_id = user.get('_id') or user.get('id')
         if not user_id:
             print("DEBUG: user object missing id field:", user)
-            return jsonify({'error': 'User object missing id'}), 500
-        jwt_token = generate_token(user_id=user_id, email=user['email'])
+        # Handle dict vs ORM object for email and name
+        user_email = user.email if hasattr(user, 'email') else user.get('email')
+        user_name = user.name if hasattr(user, 'name') else user.get('name')
+        
+        jwt_token = generate_token(user_id=user_id, email=user_email)
 
         return jsonify({
             'token': jwt_token,
             'user': {
-                'email': user['email'],
-                'name': user['name']
+                'email': user_email,
+                'name': user_name
             }
         }), 200
         

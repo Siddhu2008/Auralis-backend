@@ -133,6 +133,19 @@ def get_user_settings(user_id):
 def get_or_create_user_settings(user_id, detected_timezone=None):
     settings = UserSettings.query.filter_by(user_id=user_id).first()
     if settings:
+        # Backfill any NULL boolean/default fields caused by ALTER TABLE (no default clause)
+        defaults = default_settings_payload()
+        dirty = False
+        for key, default_value in defaults.items():
+            current = getattr(settings, key, None)
+            if current is None:
+                setattr(settings, key, default_value)
+                dirty = True
+        if dirty:
+            try:
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
         return settings
 
     payload = default_settings_payload()

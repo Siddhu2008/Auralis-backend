@@ -1,4 +1,14 @@
 import os
+import eventlet
+eventlet.monkey_patch()
+
+os.environ['EVENTLET_NO_GREENDNS'] = 'yes' # Force system DNS to avoid Lookup timed out on Windows
+
+import dns.resolver
+resolver = dns.resolver.Resolver()
+resolver.nameservers = ['8.8.8.8']
+dns.resolver.default_resolver = resolver
+
 from flask import Flask, jsonify, request
 from werkzeug.exceptions import HTTPException
 from datetime import datetime
@@ -31,6 +41,7 @@ from utils.email_handler import send_email_custom
 from utils.assistant_intelligence import categorize_email, extract_action_items
 
 from database import db, init_db, ensure_database_schema
+from flask_migrate import Migrate
 import models.email  # noqa: F401
 import models.ai_memory  # noqa: F401
 import models.task  # noqa: F401
@@ -39,34 +50,26 @@ load_dotenv()
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'default_secret_key')
-try:
-    init_db(app)
-    ensure_database_schema(app)
-except Exception as db_err:
-    print(f"[CRITICAL ERROR] Database initialization failed: {db_err}")
-    import traceback
-    print(traceback.format_exc())
-    # We continue so at least the health check can respond
+init_db(app)
+ensure_database_schema(app)
 
-# CORS Configuration
-# Use specific origins for credentials support (Wildcard "*" doesn't work with credentials)
 cors_origins_env = os.getenv("CORS_ORIGINS", "").strip()
-if cors_origins_env:
-    FRONTEND_ORIGINS = [o.strip() for o in cors_origins_env.split(",") if o.strip()]
-else:
+FRONTEND_ORIGINS = [
+    origin.strip()
+    for origin in cors_origins_env.split(",")
+    if origin.strip()
+]
+if not FRONTEND_ORIGINS:
     FRONTEND_ORIGINS = [
-        "https://auralis-frontend.vercel.app",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "https://auralis-frontend.vercel.app",
     ]
-
-# Global CORS
 CORS(app, resources={r"/*": {"origins": FRONTEND_ORIGINS}}, supports_credentials=True)
-
 socketio = SocketIO(
     app, 
-    cors_allowed_origins=FRONTEND_ORIGINS, 
-    async_mode='threading',
+    cors_allowed_origins=FRONTEND_ORIGINS,
+    async_mode='eventlet',
     ping_timeout=60,
     ping_interval=25
 )
@@ -79,7 +82,6 @@ app.register_blueprint(assistant_bp, url_prefix='/api/assistant')
 app.register_blueprint(profile_bp, url_prefix='/api/profile')
 app.register_blueprint(settings_bp, url_prefix='/api/settings')
 app.register_blueprint(meeting_bp, url_prefix='/api/v2/meetings')
-
 
 
 def _normalize_email(value):
@@ -108,16 +110,16 @@ def handle_http_exception(error):
 
 @app.errorhandler(Exception)
 def handle_unexpected_exception(error):
-    import traceback
-    error_details = traceback.format_exc()
     print(f"[UNHANDLED ERROR] {error}")
-    print(error_details)
-    return jsonify({
-        "error": "Internal server error",
-        "details": str(error) if app.debug else "Please check server logs"
-    }), 500
+    return jsonify({"error": "Internal server error"}), 500
 
-
+@app.after_request
+def add_security_headers(response):
+    # Set COOP to allow Google OAuth popups to communicate back to the opener
+    response.headers['Cross-Origin-Opener-Policy'] = 'same-origin-allow-popups'
+    # Set COEP to allow cross-origin embeddings if needed, or stick to safe defaults
+    response.headers['Cross-Origin-Embedder-Policy'] = 'unsafe-none'
+    return response
 
 @app.route('/api/ai/summarize', methods=['POST'])
 def ai_summarize():
@@ -348,10 +350,10 @@ def create_new_meeting():
         if settings.notifications_enabled:
             create_notification(user_id, f"Meeting saved: {meeting.get('title')}", type='success')
         
-        # Email Notification (optional)
+        # Email Notification (optional, but requested by user)
+        # Note: we need the email from payload
         user_email = payload.get('email')
         if user_email and settings.email_notifications_enabled:
-            # We use _ to ignore the error message here as it's not critical
             send_notification_email(user_email, meeting.get('title'), "now", type='meeting')
 
         return jsonify({"meeting": meeting}), 201
@@ -590,10 +592,7 @@ def email_send():
         return jsonify({"error": "Email requires explicit approval"}), 400
 
     try:
-        ok, err = send_email_custom(recipient, subject, body)
-        if not ok:
-            print(f"[ERROR] Custom email failed: {err}")
-            
+        send_email_custom(recipient, subject, body)
         category = categorize_email(subject, body)
         summary = summarize_text(body) if len(body) > 80 else body
         row = create_email_entry(

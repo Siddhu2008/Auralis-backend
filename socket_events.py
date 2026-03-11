@@ -11,6 +11,9 @@ from utils.ai_response import generate_avatar_chat
 from utils.ai_service import ai_service
 from models.schedule import Schedule
 from datetime import datetime
+from meeting_agent_bp import is_agent_active, feed_transcript_to_agent, finalize_agent_meeting
+from utils.meeting_agent import generate_agent_response
+from utils.tts_handler import text_to_speech_base64
 
 # Room User Details: room_user_details[room_id][sid] = {'name': 'John Doe', ...}
 room_user_details = {}
@@ -20,7 +23,7 @@ room_host_ids = {} # NEW: Track host user_id
 room_audio_buffers = {}
 live_transcripts = {}
 proxy_states = {} # Track if user has proxy enabled: proxy_states[sid] = True/False
-room_cleanup_tasks = {} # room_id -> threading.Timer
+room_cleanup_tasks = {} # room_id -> greenlet
 "NO_RESPONSE_NEEDED" # Sentinel for AI Proxy
 
 def _schedule_room_cleanup(room):
@@ -193,12 +196,32 @@ def register_socket_events(socketio):
                     for p_email in schedule.participants:
                         # Start timer for each participant (except the joining host)
                         # We need an identifier for them. For now, using email as user_id proxy.
-                        ai_service.start_absence_timer(room, p_email, p_email.split('@')[0], 'participant', emit)
+                        ai_service.start_absence_timer(room, p_email, p_email.split('@')[0], 'participant', socketio.emit)
             except Exception as e:
                 print(f"[AI] Schedule lookup error: {e}")
 
             emit('role_assigned', {'role': 'host'})
             print(f"Room {room} session STARTED by Host {request.sid}")
+
+            # --- AUTO-DEPLOY AGENT BY DEFAULT ---
+            print(f"[Agent] Auto-deploying for host {user_id} in room {room}")
+            from meeting_agent_bp import _active_agents
+            from datetime import datetime as dt
+            _active_agents[room] = {
+                'user_id': user_id,
+                'deployed_at': dt.utcnow().isoformat(),
+                'transcript': [],
+                'qa_pairs': [],
+            }
+            greeting = f"Hello {user_name}! I'm Auralis AI, your meeting assistant. I've joined automatically to help you with notes and Q&A."
+            audio_b64 = text_to_speech_base64(greeting)
+            emit('chat_message', {
+                'sender': 'Auralis_Agent',
+                'message': greeting,
+                'timestamp': datetime.utcnow().isoformat(),
+            }, to=room)
+            emit('agent_voice_response', {'audio': audio_b64, 'text': greeting}, to=room)
+            emit('agent_status_change', {'active': True, 'room': room}, to=room)
             return
 
         # 5. Handle Host Reclamation
@@ -382,17 +405,56 @@ def register_socket_events(socketio):
     def handle_transcript_update(data):
         room = data.get('room')
         text = data.get('text')
+        user_id = data.get('user_id')
         if room and text:
+            # Get speaker name with fallbacks
+            speaker = "Guest"
+            room_details = room_user_details.get(room, {})
+            user_info = room_details.get(request.sid)
+            if user_info:
+                speaker = user_info.get('name', 'User')
+            elif getattr(request, 'sid', None) == 'Auralis_Agent':
+                speaker = "Auralis"
+            
+            timestamp = datetime.utcnow().strftime('%H:%M:%S')
+            
             if room not in live_transcripts:
                 live_transcripts[room] = []
-            live_transcripts[room].append(text)
-            # print(f"Transcript update for {room}: {text}")
+            
+            # Store structured transcript
+            entry = {'speaker': speaker, 'text': text, 'timestamp': timestamp}
+            live_transcripts[room].append(entry)
+
+            # Feed to AI Agent if active (non-blocking)
+            if is_agent_active(room):
+                def _agent_process():
+                    try:
+                        qa_pair = feed_transcript_to_agent(room, text, user_id)
+                        if qa_pair:
+                            socketio.emit('agent_qa_detected', qa_pair, to=room)
+                    except Exception as e:
+                        print(f'[Agent] QA detection error: {e}')
+                threading.Thread(target=_agent_process, daemon=True).start()
 
     @socketio.on('end_meeting')
     def handle_end_meeting(data):
         room = data.get('room')
-        user_id = data.get('user_id') 
+        raw_user_id = data.get('user_id') 
         title = data.get('title', 'Untitled Meeting')
+        duration = data.get('duration', 'N/A')
+        participants_count = data.get('participants_count', 1)
+
+        # Convert user_id to int if possible, otherwise None (for anonymous)
+        user_id = None
+        try:
+            if raw_user_id and str(raw_user_id).isdigit():
+                user_id = int(raw_user_id)
+            elif isinstance(raw_user_id, int):
+                user_id = raw_user_id
+        except:
+            pass
+        
+        print(f"DEBUG: Processing end_meeting for room {room}. Raw UserID: {raw_user_id}, Cast UserID: {user_id}")
         
         print(f"Processing meeting {room}...")
         emit('processing_status', {'status': 'processing'}, to=room)
@@ -402,7 +464,8 @@ def register_socket_events(socketio):
         # Prioritize Live Transcript
         if room in live_transcripts and live_transcripts[room]:
             print("Using Live Transcript for summary.")
-            transcript_text = " ".join(live_transcripts[room])
+            # Convert structured transcript to plain text for the simple summarizer
+            transcript_text = " ".join([f"{l['speaker']}: {l['text']}" for l in live_transcripts[room]])
         
         # Fallback to Audio Buffer if Live Transcript is empty
         if not transcript_text and room in room_audio_buffers and room_audio_buffers[room]:
@@ -423,6 +486,22 @@ def register_socket_events(socketio):
 
         if not transcript_text:
             print("No content to summarize.")
+            print(f"DEBUG: Saving fallback meeting for {room} (No content).")
+            try:
+               create_meeting(
+                   user_id=user_id, 
+                   room_id=room, 
+                   title=title, 
+                   transcript="", 
+                   summary="No spoken content recorded during this meeting.",
+                   duration=duration,
+                   participants_count=participants_count,
+                   agent_report=None,
+                   qa_pairs=[]
+               )
+               print(f"SUCCESS: Fallback meeting saved for {room}")
+            except Exception as db_e:
+               print(f"DATABASE ERROR saving fallback meeting: {db_e}")
             emit('processing_status', {'status': 'completed', 'summary': "No content recorded."}, to=room)
             return
 
@@ -431,8 +510,31 @@ def register_socket_events(socketio):
             summary_text = summarize_text(transcript_text)
             
             # Save to DB
-            if user_id:
-               create_meeting(user_id, room, title, transcript_text, summary_text)
+            agent_report = None
+            agent_qa = []
+            if is_agent_active(room):
+                try:
+                    agent_report, agent_qa = finalize_agent_meeting(room, user_id, title)
+                    print(f"[Agent] Report and {len(agent_qa)} QA pairs generated for room {room}")
+                except Exception as ae:
+                    print(f"[Agent] Report generation error: {ae}")
+
+            print(f"DEBUG: Saving full meeting for {room}. Transcript len: {len(transcript_text)}")
+            try:
+               create_meeting(
+                   user_id=user_id, 
+                   room_id=room, 
+                   title=title, 
+                   transcript=transcript_text, 
+                   summary=summary_text,
+                   duration=duration,
+                   participants_count=participants_count,
+                   agent_report=agent_report,
+                   qa_pairs=agent_qa
+               )
+               print(f"SUCCESS: Full meeting saved for {room}")
+            except Exception as db_e:
+               print(f"DATABASE ERROR saving full meeting: {db_e}")
 
             # Add to Vector Store
             try:
@@ -441,7 +543,11 @@ def register_socket_events(socketio):
             except Exception as vs_e:
                 print(f"Vector Store Indexing Error: {vs_e}")
             
-            emit('processing_status', {'status': 'completed', 'summary': summary_text}, to=room)
+            emit('processing_status', {
+                'status': 'completed',
+                'summary': summary_text,
+                'agent_report': agent_report,
+            }, to=room)
             
             # Clear buffers
             if room in room_audio_buffers: room_audio_buffers[room] = []
@@ -519,15 +625,23 @@ def register_socket_events(socketio):
         # Trigger proxy check for other users
         handle_proxy_check({'room': room, 'message': message})
 
-        # Check for trigger
-        if "@ai" in message.lower() or "auralis" in message.lower():
-            transcript = " ".join(live_transcripts.get(room, []))
-            response = generate_avatar_chat(message, transcript=transcript)
-            emit('chat_message', {
-                'sender': 'Auralis_AI',
-                'message': response,
-                'timestamp': datetime.utcnow().isoformat()
-            }, to=room)
+        # Trigger Auralis Agent if mentioned
+        user_info = room_user_details.get(room, {}).get(request.sid, {})
+        user_name = user_info.get('name', '').lower()
+        
+        if "auralis" in message.lower() or (user_name and user_name in message.lower()):
+            if is_agent_active(room):
+                # Use the new agent chat logic
+                handle_agent_chat({'room': room, 'message': message})
+            else:
+                # If agent not deployed, use legacy avatar chat if desired or skip
+                transcript = " ".join([f"{l['speaker']}: {l['text']}" for l in live_transcripts.get(room, [])])
+                response = generate_avatar_chat(message, transcript=transcript)
+                emit('chat_message', {
+                    'sender': 'Auralis_Agent',
+                    'message': response,
+                    'timestamp': datetime.utcnow().isoformat()
+                }, to=room)
 
     @socketio.on('toggle_proxy')
     def handle_toggle_proxy(data):
@@ -619,3 +733,81 @@ def register_socket_events(socketio):
             'role': 'proxy',
             'user_id': data['user_id']
         }, to=room)
+
+    # ── AI Meeting Agent Socket Events ───────────────────────────────────
+    @socketio.on('deploy_agent')
+    def handle_deploy_agent(data):
+        room = data.get('room')
+        user_id = data.get('user_id')
+        if not room:
+            return
+        from meeting_agent_bp import _active_agents
+        from datetime import datetime as dt
+        _active_agents[room] = {
+            'user_id': user_id,
+            'deployed_at': dt.utcnow().isoformat(),
+            'transcript': list(live_transcripts.get(room, [])),
+            'qa_pairs': [],
+        }
+        greeting = "Hello everyone! I'm Auralis AI Agent. I'll be taking notes, tracking Q&A, and generating a full report when the meeting ends. Feel free to ask me anything!"
+        audio_b64 = text_to_speech_base64(greeting)
+        emit('chat_message', {
+            'sender': 'Auralis_Agent',
+            'message': greeting,
+            'timestamp': datetime.utcnow().isoformat(),
+        }, to=room)
+        emit('agent_voice_response', {'audio': audio_b64, 'text': greeting}, to=room)
+        emit('agent_status_change', {'active': True, 'room': room}, to=room)
+        print(f"[Agent] Deployed in room {room}")
+
+    @socketio.on('retire_agent')
+    def handle_retire_agent(data):
+        room = data.get('room')
+        if not room:
+            return
+        from meeting_agent_bp import _active_agents
+        _active_agents.pop(room, None)
+        farewell = "I'm signing off now. The meeting notes and Q&A log are saved. You can ask me about this meeting anytime later!"
+        audio_b64 = text_to_speech_base64(farewell)
+        emit('chat_message', {
+            'sender': 'Auralis_Agent',
+            'message': farewell,
+            'timestamp': datetime.utcnow().isoformat(),
+        }, to=room)
+        emit('agent_voice_response', {'audio': audio_b64, 'text': farewell}, to=room)
+        emit('agent_status_change', {'active': False, 'room': room}, to=room)
+        print(f"[Agent] Retired from room {room}")
+
+    @socketio.on('agent_chat')
+    def handle_agent_chat(data):
+        room = data.get('room')
+        message = data.get('message')
+        if not room or not message:
+            return
+        # Format transcript for agent
+        transcript_data = live_transcripts.get(room, [])
+        transcript_plain = " ".join([f"{l['speaker']}: {l['text']}" for l in transcript_data])
+        from meeting_agent_bp import _active_agents
+        qa_pairs = _active_agents.get(room, {}).get('qa_pairs', [])
+
+        def _respond():
+            try:
+                result = generate_agent_response(message, transcript_plain, qa_pairs)
+                response_text = result.get('text', 'Let me think about that.')
+                audio_b64 = text_to_speech_base64(response_text)
+                socketio.emit('chat_message', {
+                    'sender': 'Auralis_Agent',
+                    'message': response_text,
+                    'intent': result.get('intent'),
+                    'timestamp': datetime.utcnow().isoformat(),
+                }, to=room)
+                socketio.emit('agent_voice_response', {'audio': audio_b64, 'text': response_text}, to=room)
+            except Exception as e:
+                print(f'[Agent] Chat error: {e}')
+                socketio.emit('chat_message', {
+                    'sender': 'Auralis_Agent',
+                    'message': "I'm processing your request. Give me a moment.",
+                    'timestamp': datetime.utcnow().isoformat(),
+                }, to=room)
+
+        threading.Thread(target=_respond, daemon=True).start()

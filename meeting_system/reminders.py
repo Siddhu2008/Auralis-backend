@@ -12,7 +12,7 @@ def send_upcoming_meeting_reminders(minutes_before=15):
         for participant in participants:
             if not participant.email:
                 continue
-            ok, _ = send_notification_email(
+            ok = send_notification_email(
                 participant.email,
                 meeting.title or f"Meeting {meeting.meeting_code}",
                 meeting.scheduled_start_at.isoformat() if meeting.scheduled_start_at else "",

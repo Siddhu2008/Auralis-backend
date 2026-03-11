@@ -5,7 +5,7 @@ class Meeting(db.Model):
     __tablename__ = 'meetings'
     
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
     room_id = db.Column(db.String(50), nullable=False)
     title = db.Column(db.String(200), nullable=False)
     date = db.Column(db.DateTime, default=datetime.utcnow)
@@ -17,6 +17,8 @@ class Meeting(db.Model):
     status = db.Column(db.String(20), default='completed')
     ended_at = db.Column(db.DateTime, nullable=True)
     action_items = db.Column(db.JSON, default=list)
+    agent_report = db.Column(db.Text, nullable=True)  # Persistent AI report
+    qa_pairs = db.Column(db.JSON, default=list)      # Persistent Q&A pairs
 
     def to_dict(self):
         return {
@@ -32,7 +34,9 @@ class Meeting(db.Model):
             'recording_url': self.recording_url,
             'status': self.status,
             'ended_at': self.ended_at.isoformat() if self.ended_at else None,
-            'action_items': self.action_items or []
+            'action_items': self.action_items or [],
+            'agent_report': self.agent_report,
+            'qa_pairs': self.qa_pairs or []
         }
 
 def create_meeting(
@@ -47,6 +51,8 @@ def create_meeting(
     status='completed',
     ended_at=None,
     action_items=None,
+    agent_report=None,
+    qa_pairs=None
 ):
     meeting = Meeting(
         user_id=user_id,
@@ -60,6 +66,8 @@ def create_meeting(
         status=status,
         ended_at=ended_at or datetime.utcnow(),
         action_items=action_items or [],
+        agent_report=agent_report,
+        qa_pairs=qa_pairs or []
     )
     db.session.add(meeting)
     db.session.commit()
@@ -82,7 +90,7 @@ def delete_meeting(meeting_id, user_id):
     return False
 
 
-def mark_meeting_completed(meeting_id, user_id, transcript=None, summary=None, action_items=None, ended_at=None):
+def mark_meeting_completed(meeting_id, user_id, transcript=None, summary=None, action_items=None, ended_at=None, agent_report=None, qa_pairs=None):
     meeting = Meeting.query.filter_by(id=meeting_id, user_id=user_id).first()
     if not meeting:
         return None
@@ -92,6 +100,10 @@ def mark_meeting_completed(meeting_id, user_id, transcript=None, summary=None, a
         meeting.summary = summary
     if action_items is not None:
         meeting.action_items = action_items
+    if agent_report is not None:
+        meeting.agent_report = agent_report
+    if qa_pairs is not None:
+        meeting.qa_pairs = qa_pairs
     meeting.status = 'completed'
     meeting.ended_at = ended_at or datetime.utcnow()
     db.session.commit()

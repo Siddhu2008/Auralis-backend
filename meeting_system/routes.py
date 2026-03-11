@@ -4,7 +4,7 @@ from flask import Blueprint, jsonify, request
 
 from database import db
 from meeting_system.models import (
-    V2Meeting,
+    Meeting,
     MeetingChatMessage,
     MeetingParticipant,
     WaitingRoomEntry,
@@ -139,7 +139,7 @@ def waiting_room_decision(meeting_id, entry_id):
         return err
     user_id = int(payload["user_id"])
 
-    meeting = V2Meeting.query.get(meeting_id)
+    meeting = Meeting.query.get(meeting_id)
     if not meeting:
         return jsonify({"error": "Meeting not found"}), 404
     if meeting.user_id != user_id:
@@ -271,10 +271,10 @@ def list_past_meetings():
         return err
     user_id = int(payload["user_id"])
     meetings = (
-        V2Meeting.query.filter(
-            (V2Meeting.user_id == user_id) & (V2Meeting.status == "ended")
+        Meeting.query.filter(
+            (Meeting.user_id == user_id) & (Meeting.status == "ended")
         )
-        .order_by(V2Meeting.ended_at.desc())
+        .order_by(Meeting.ended_at.desc())
         .all()
     )
     response = []

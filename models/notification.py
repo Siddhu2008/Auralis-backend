@@ -27,12 +27,12 @@ def create_notification(user_id, message, type='info'):
     db.session.commit()
     return notif.to_dict()
 
-def get_user_notifications(user_id, only_unread=True):
+def get_user_notifications(user_id, only_unread=False):
     query = Notification.query.filter_by(user_id=user_id)
     if only_unread:
         query = query.filter_by(is_read=False)
     
-    notifs = query.order_by(Notification.created_at.desc()).limit(20).all()
+    notifs = query.order_by(Notification.created_at.desc()).limit(50).all()
     return [n.to_dict() for n in notifs]
 
 def mark_as_read(notif_id, user_id):

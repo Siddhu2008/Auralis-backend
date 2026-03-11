@@ -3,11 +3,13 @@ import os
 import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from google.genai import Client
+from utils.ai_service_unified import ai_service
 from utils.jwt_handler import decode_token
 from models.user import find_user_by_id
 from models.reminder import create_reminder, get_user_reminders
 from models.action_log import log_action, get_action_history
+
+_DEFAULT_AI_MODEL = 'gemini-2.5-flash'  # BUG-020: single constant for model name
 from models.user_preference import get_preferences, set_preference
 from models.user_settings import get_or_create_user_settings
 from models.schedule import create_schedule, update_schedule, delete_schedule, get_user_schedules
@@ -49,14 +51,11 @@ def _can_auto_send_email(settings, recipient, approved):
         return True
     return False
 
-def get_client():
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        return None
-    return Client(api_key=api_key)
+# Using unified ai_service instead of local get_client
 
 @assistant_bp.route('/chat', methods=['POST'])
 def assistant_chat():
+    print(f"[ASSISTANT] New request received at {datetime.now()}")
     auth_header = request.headers.get('Authorization')
     if not auth_header or not auth_header.startswith('Bearer '):
         return jsonify({"error": "Unauthorized"}), 401
@@ -65,7 +64,7 @@ def assistant_chat():
     try:
         payload = decode_token(token)
         user_id = payload['user_id']
-    except:
+    except Exception as e:  # BUG-008 fix
         return jsonify({"error": "Invalid token"}), 401
 
     data = request.json
@@ -113,19 +112,19 @@ def assistant_chat():
     - If the user wants to schedule a meeting, extract: title, date, time, and participants (if any).
     - If the user wants to modify an existing meeting (check upcoming_schedules), extract: schedule_id, and new fields.
     - If the user wants to cancel a meeting, extract: schedule_id.
-    - If the user wants to draft an email, extract: recipient, subject, and tone/body.
+    - If the user wants to draft/send an email, extract: recipient, subject, and body.
     - If information is missing, ask for it.
     - Use 'user_preferences' to suggest optimal times or frequent contacts.
-    - Use 'action_history' to avoid duplicating tasks.
     - Respect working hours from settings when proposing meeting times.
-    - If auto follow-up is disabled, do not add unsolicited follow-up suggestions.
     
     OUTPUT FORMAT:
     Return JSON:
     {{
       "response": "Agent response string",
       "action": "schedule" | "modify" | "cancel" | "email" | "task" | "sync" | "set_pref" | null,
-      "action_data": {{ ... }}
+      "action_data": {{
+         "title": "...", "start_time": "ISO_TIMESTAMP", "participants": [], "recipient": "...", "subject": "...", "body": "...", "schedule_id": "..."
+      }}
     }}
     
     User Message: {user_message}
@@ -133,24 +132,87 @@ def assistant_chat():
 
     default_response = "I analyzed your context and I am ready to help with scheduling, communication, and action tracking."
     try:
+        print(f"[ASSISTANT] Calling AI with prompt: {user_message[:50]}...")
         res_data = ai_structured_chat(
             prompt,
             default_response=default_response,
         )
+        print(f"[ASSISTANT] AI call returned: {bool(res_data.get('response'))}")
+
+        # AI-TO-ACTION AUTOMATION
+        action = res_data.get("action")
+        ad = res_data.get("action_data") or {}
+
+        if action == "schedule":
+            try:
+                # Automate scheduling
+                title = ad.get("title") or "Meeting with Assistant"
+                start_time = ad.get("start_time")
+                if start_time:
+                    create_schedule(
+                        user_id=user_id,
+                        title=title,
+                        start_time=start_time,
+                        participants=ad.get("participants", []),
+                        duration_minutes=ad.get("duration_minutes", 30)
+                    )
+                    log_action(user_id, "schedule", f"Scheduled: {title} at {start_time}")
+                    res_data["response"] += f"\n\n[System Notification: I've successfully added '{title}' to your schedule for {start_time}.]"
+            except Exception as se:
+                print(f"Auto-Schedule Error: {se}")
+
+        elif action == "email":
+            try:
+                recipient = ad.get("recipient")
+                subject = ad.get("subject") or "Message from Auralis"
+                body = ad.get("body")
+                if recipient and body:
+                    # BUG-007 FIX: Check approval settings BEFORE auto-sending email
+                    settings_check = get_or_create_user_settings(user_id)
+                    approved = False  # Auto-chat emails are never pre-approved
+                    if settings_check.require_email_approval and not _can_auto_send_email(settings_check, recipient, approved):
+                        # Don't auto-send — let the UI show the ActionCard confirmation
+                        res_data["response"] += "\n\n[Note: Email draft ready. Please confirm before sending.]"
+                    else:
+                        success = send_email_custom(recipient, subject, body)
+                        if success:
+                            create_email_entry(
+                                user_id=user_id,
+                                subject=subject,
+                                body=body,
+                                summary=body[:80],
+                                recipient=recipient,
+                                direction='outgoing',
+                                category='normal',
+                                approved=True
+                            )
+                            log_action(user_id, "email", f"Sent email to {recipient}")
+                            res_data["response"] += f"\n\n[System Notification: Your email to {recipient} has been dispatched successfully.]"
+            except Exception as ee:  # BUG-008 fix
+                print(f"Auto-Email Error: {ee}")
+
+        elif action == "cancel":
+             sid = ad.get("schedule_id")
+             if sid:
+                 delete_schedule(sid, user_id)
+                 res_data["response"] += f"\n\n[System Notification: Meeting {sid} has been cancelled.]"
+
         # If AI path degraded to generic fallback, use a deterministic contextual answer.
         if (
             (res_data.get("response") or "").strip() == default_response
             and not res_data.get("action")
         ):
             res_data = contextual_fallback_response(user_message, context)
+            if not ai_service.client:
+                res_data["response"] = "I'm currently in low-power mode (API key missing). I can still help with some basic context, but my full intelligence is unavailable."
 
         add_memory(user_id, f"USER: {user_message}")
         add_memory(user_id, f"ASSISTANT: {res_data.get('response', '')}")
         return jsonify(normalize_chat_payload(res_data, "I am ready to assist.")), 200
-    except Exception as e:
+    except Exception as e:  # BUG-008 fix
         print(f"Assistant AI Error: {e}")
         return jsonify(normalize_chat_payload({
-            "response": "I am experiencing a temporary neural desync. Please standby while I re-establish connection.",
+            "response": "The Auralis core is currently experiencing a temporary synchronization delay. I'm automatically attempting to re-establish connection. Please try your request again in a moment.",
             "action": None,
             "action_data": {},
             "confidence": 0.3,
@@ -166,7 +228,7 @@ def assistant_summarize():
     try:
         payload = decode_token(token)
         user_id = payload['user_id']
-    except:
+    except Exception as e:  # BUG-008 fix
         return jsonify({"error": "Invalid token"}), 401
 
     data = request.get_json(silent=True) or {}
@@ -191,7 +253,7 @@ def assistant_execute():
     try:
         payload = decode_token(token)
         user_id = payload['user_id']
-    except:
+    except Exception as e:  # BUG-008 fix
         return jsonify({"error": "Invalid token"}), 401
 
     data = request.json
@@ -361,32 +423,27 @@ def get_briefing():
         schedules = get_user_schedules(user_id)
         reminders = get_user_reminders(user_id)
         emails = fetch_recent_emails(limit=5)
-        
         # Power the briefing with AI
-        client = get_client()
-        summary_text = f"Initial session established. You have {len(schedules)} meetings and {len(reminders)} tasks."
+        summary_text = f"You have {len(schedules)} meetings and {len(reminders)} tasks."
         
-        if client:
-            briefing_context = {
-                "schedules": schedules,
-                "reminders": reminders,
-                "recent_emails": emails
-            }
-            prompt = f"""
-            You are the 'Auralis Executive Assistant'.
-            Provide a concise, ultra-professional 1-2 sentence briefing based on this context:
-            {json.dumps(briefing_context, indent=2)}
-            
-            Tone: Executive, encouraging, focused.
-            """
-            try:
-                response = client.models.generate_content(
-                    model='gemini-flash-latest',
-                    contents=prompt
-                )
-                summary_text = response.text.strip()
-            except:
-                pass
+        briefing_context = {
+            "schedules": schedules,
+            "reminders": reminders,
+            "recent_emails": emails
+        }
+        prompt = f"""
+        You are the 'Auralis Executive Assistant'.
+        Provide a concise, ultra-professional 1-2 sentence briefing based on this context:
+        {json.dumps(briefing_context, indent=2)}
+        
+        Tone: Executive, encouraging, focused.
+        """
+        try:
+            res = ai_service.generate_content(prompt, model=_DEFAULT_AI_MODEL)  # BUG-020 fix
+            if res:
+                summary_text = res
+        except Exception:  # BUG-008 fix
+            pass
 
         return jsonify({
             "upcoming_meetings": schedules,
@@ -408,7 +465,7 @@ def get_agenda():
     try:
         payload = decode_token(token)
         user_id = payload['user_id']
-    except:
+    except Exception as e:  # BUG-008 fix
         return jsonify({"error": "Invalid token"}), 401
 
     try:
