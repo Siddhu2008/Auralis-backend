@@ -32,7 +32,7 @@ def generate_answer(context_chunks, question):
     
     try:
         # Use our unified service which handles rotation and fallbacks automatically
-        result = ai_service.generate_content(prompt, model='gemini-2.5-flash')
+        result = ai_service.generate_content(prompt, model='gemini-1.5-flash')
         return result or _AI_UNAVAILABLE_MSG
     except Exception as e:
         print(f"Gemini API Error: {e}")

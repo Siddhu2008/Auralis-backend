@@ -15,6 +15,11 @@ class User(db.Model):
     role = db.Column(db.String(20), default='user')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
+    # Google API Credentials (Agency Phase)
+    google_access_token = db.Column(db.String(500), nullable=True)
+    google_refresh_token = db.Column(db.String(500), nullable=True)
+    google_token_expiry = db.Column(db.DateTime, nullable=True)
+    
     # Relationships
     # Try both possible Meeting class locations for compatibility
     try:

@@ -1,94 +1,73 @@
-
 import os
 import json
-import numpy as np
-import hashlib
-
-class SimpleEmbeddingFunction:
-    def __init__(self, dim=384):
-        self.dim = dim
-
-    def __call__(self, texts):
-        embeddings = []
-        for text in texts:
-            words = text.lower().split()
-            vec = np.zeros(self.dim, dtype=np.float32)
-            for word in words:
-                word_hash = int(hashlib.md5(word.encode()).hexdigest(), 16)
-                idx = word_hash % self.dim
-                sign = 1.0 if (word_hash // self.dim) % 2 == 0 else -1.0
-                vec[idx] += sign
-            norm = np.linalg.norm(vec)
-            if norm > 0:
-                vec = vec / norm
-            embeddings.append(vec.tolist())
-        return embeddings
 
 class VectorStore:
-    def __init__(self, persistence_path="vector_store.json"):
-        self.path = persistence_path
-        self.embedding_fn = SimpleEmbeddingFunction()
-        self.data = self._load()
+    def __init__(self, collection_name="auralis_memory"):
+        self.persist_directory = os.path.join(os.path.dirname(__file__), "..", "chroma_db_native")
+        os.makedirs(self.persist_directory, exist_ok=True)
+        self.collection_file = os.path.join(self.persist_directory, f"{collection_name}.json")
+        self.documents = []
+        self._load()
+        print("Native Vector Store initialized (No Torch/Chroma)")
 
     def _load(self):
-        if os.path.exists(self.path):
-            with open(self.path, 'r') as f:
-                return json.load(f)
-        return {"ids": [], "documents": [], "metadatas": [], "embeddings": []}
+        if os.path.exists(self.collection_file):
+            try:
+                with open(self.collection_file, "r") as f:
+                    self.documents = json.load(f)
+            except Exception:
+                self.documents = []
 
     def _save(self):
-        with open(self.path, 'w') as f:
-            json.dump(self.data, f)
+        try:
+            with open(self.collection_file, "w") as f:
+                json.dump(self.documents, f)
+        except Exception:
+            pass
 
     def add_meeting(self, meeting_id, text, metadata=None):
         if not text:
             return
 
         chunk_size = 1000  
-        chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
-        
-        # Embed
-        embeddings = self.embedding_fn(chunks)
+        chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size - 100)]
         
         for i, chunk in enumerate(chunks):
-            chunk_id = f"{meeting_id}_{i}"
             meta = metadata.copy() if metadata else {}
             meta['chunk_index'] = i
             meta['meeting_id'] = str(meeting_id)
-            meta['text_content'] = chunk
+            meta['source'] = 'meeting'
             
-            # Append
-            self.data['ids'].append(chunk_id)
-            self.data['documents'].append(chunk)
-            self.data['metadatas'].append(meta)
-            self.data['embeddings'].append(embeddings[i])
-            
-        self._save()
-        print(f"Added {len(chunks)} chunks for meeting {meeting_id}")
-
-    def search(self, query, n_results=5):
-        if not self.data['embeddings']:
-            return []
-            
-        query_embedding = self.embedding_fn([query])[0]
-        query_vec = np.array(query_embedding, dtype=np.float32)
-        
-        doc_vecs = np.array(self.data['embeddings'], dtype=np.float32)
-        
-        # Cosine similarity: dot product (since normalized)
-        scores = np.dot(doc_vecs, query_vec)
-        
-        # Top K
-        top_k_indices = np.argsort(scores)[::-1][:n_results]
-        
-        results = []
-        for idx in top_k_indices:
-            results.append({
-                'content': self.data['documents'][idx],
-                'meeting_id': self.data['metadatas'][idx]['meeting_id'],
-                'score': float(scores[idx])
+            self.documents.append({
+                "id": f"mtg_{meeting_id}_{i}",
+                "content": chunk,
+                "metadata": meta
             })
             
-        return results
+        self._save()
+        print(f"Added {len(chunks)} chunks for meeting {meeting_id} to Native Vector Store")
 
+    def search(self, query, n_results=5):
+        if not self.documents:
+            return []
+            
+        # A very naive search fallback based on simple word matching
+        query_words = set(query.lower().split())
+        results = []
+        
+        for doc in self.documents:
+            doc_words = set(doc["content"].lower().split())
+            overlap = len(query_words.intersection(doc_words))
+            
+            if overlap > 0:
+                results.append({
+                    'content': doc["content"],
+                    'meeting_id': doc["metadata"].get('meeting_id', 'unknown'),
+                    'score': float(overlap)
+                })
+        
+        results.sort(key=lambda x: x['score'], reverse=True)
+        return results[:n_results]
+
+# Singleton
 vector_store = VectorStore()

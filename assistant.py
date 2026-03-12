@@ -9,7 +9,7 @@ from models.user import find_user_by_id
 from models.reminder import create_reminder, get_user_reminders
 from models.action_log import log_action, get_action_history
 
-_DEFAULT_AI_MODEL = 'gemini-2.5-flash'  # BUG-020: single constant for model name
+_DEFAULT_AI_MODEL = 'gemini-1.5-flash'
 from models.user_preference import get_preferences, set_preference
 from models.user_settings import get_or_create_user_settings
 from models.schedule import create_schedule, update_schedule, delete_schedule, get_user_schedules
@@ -28,6 +28,9 @@ from utils.assistant_intelligence import (
     normalize_chat_payload,
     suggest_proactive_items,
 )
+from services.ml.intent_classifier import intent_engine
+from models.productivity_metrics import get_or_create_daily_metrics
+from models.user_behavior import log_user_behavior
 
 assistant_bp = Blueprint('assistant', __name__)
 
@@ -70,6 +73,8 @@ def assistant_chat():
     data = request.json
     user_message = data.get('message', '')
     
+    log_user_behavior(user_id, 'assistant_chat', feature_used='chat')
+    
     # Fetch Memory & Context
     recent_emails = []
     is_sync_request = any(kw in user_message.lower() for kw in ["email", "inbox", "sync", "schedule for today", "fetch", "check my mail"])
@@ -94,6 +99,9 @@ def assistant_chat():
         "settings": user_settings.to_dict(),
     }
 
+    intent_guess = intent_engine.predict_intent(user_message)
+    print(f"[ASSISTANT ML] Detected local intent: {intent_guess}")
+
     token_limit_map = {"short": 256, "medium": 640, "detailed": 1024}
     max_output_tokens = token_limit_map.get(user_settings.assistant_response_length, 640)
 
@@ -104,6 +112,9 @@ def assistant_chat():
     Response style length: {user_settings.assistant_response_length}.
     Auto follow-up suggestions enabled: {user_settings.auto_followups_enabled}.
     Your tone must strictly align with the configured tone while remaining helpful.
+    
+    [SYSTEM ML CLASSIFIER CLUE]: The AI classifier has detected the intent as: '{intent_guess}'. 
+    Use this to strictly format your action response if it is an actionable intent.
     
     SYSTEM CONTEXT:
     {json.dumps(context, indent=2)}
@@ -425,11 +436,13 @@ def get_briefing():
         emails = fetch_recent_emails(limit=5)
         # Power the briefing with AI
         summary_text = f"You have {len(schedules)} meetings and {len(reminders)} tasks."
+        metrics = get_or_create_daily_metrics(user_id)
         
         briefing_context = {
             "schedules": schedules,
             "reminders": reminders,
-            "recent_emails": emails
+            "recent_emails": emails,
+            "today_productivity": metrics.to_dict() if metrics else {}
         }
         prompt = f"""
         You are the 'Auralis Executive Assistant'.
@@ -479,4 +492,39 @@ def get_agenda():
             "tasks": tasks,
         }), 200
     except Exception as e:
+        return jsonify({"error": str(e)}), 500
+@assistant_bp.route('/clear-interactions', methods=['POST'])
+def clear_interactions():
+    auth_header = request.headers.get('Authorization')
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return jsonify({"error": "Unauthorized"}), 401
+    token = auth_header.split(' ')[1]
+    try:
+        from database import db
+        from models.ai_memory import AIMemory
+        payload = decode_token(token)
+        user_id = payload['user_id']
+        AIMemory.query.filter_by(user_id=user_id).delete()
+        db.session.commit()
+        return jsonify({"message": "Interaction history redacted."}), 200
+    except Exception as e:
+        print(f"[DEBUG] Clear interactions error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@assistant_bp.route('/reset-schema', methods=['POST'])
+def reset_schema():
+    auth_header = request.headers.get('Authorization')
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return jsonify({"error": "Unauthorized"}), 401
+    token = auth_header.split(' ')[1]
+    try:
+        from database import db
+        from models.ai_memory import AIMemory
+        payload = decode_token(token)
+        user_id = payload['user_id']
+        AIMemory.query.filter_by(user_id=user_id).delete()
+        db.session.commit()
+        return jsonify({"message": "Neural schema reset complete."}), 200
+    except Exception as e:
+        print(f"[DEBUG] Reset schema error: {e}")
         return jsonify({"error": str(e)}), 500

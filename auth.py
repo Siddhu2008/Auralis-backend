@@ -3,8 +3,10 @@ import os
 from flask import Blueprint, request, jsonify, current_app
 from utils.otp_handler import generate_otp, store_otp, verify_otp
 from utils.email_handler import send_email_otp
-from utils.jwt_handler import generate_token
-from models.user import create_user, find_user_by_email, find_user_by_google_id
+from utils.jwt_handler import generate_token, decode_token
+from models.user import create_user, find_user_by_email, find_user_by_google_id, User
+from database import db
+from datetime import datetime, timedelta
 from models.user_settings import create_default_settings_for_user
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
@@ -28,12 +30,16 @@ def send_otp():
         # Send Email
         email_sent = send_email_otp(email, otp)
         
+        # [AUTH DEBUG] Always log OTP for development speed
+        print(f"\n [AUTH DEBUG] OTP for {email}: {otp} \n")
+        
+        # [AUTH DEBUG] Always log OTP for development speed
+        print(f"\n [AUTH DEBUG] OTP for {email}: {otp} \n")
+        
         if email_sent:
             return jsonify({'message': 'OTP sent to your email'}), 200
         else:
-            # Fallback for dev mode/error
-            print(f" [AUTH DEBUG] OTP for {email}: {otp} ")
-            return jsonify({'message': 'Failed to send email (Check .env). OTP logged to console for Dev.'}), 200
+            return jsonify({'message': 'Email service unavailable. OTP logged to console for Dev.'}), 200
     except Exception as e:
         print(f"OTP Send Error: {e}")
         return jsonify({'error': 'Failed to process request', 'details': str(e)}), 500
@@ -164,3 +170,41 @@ def google_auth():
             'error': 'Internal Authentication failure',
             'details': str(e)
         }), 500
+
+
+@auth_bp.route('/link-google-services', methods=['POST'])
+def link_google_services():
+    """
+    Called after frontend performs a 'Link' flow to get an access/refresh token.
+    Expects { "access_token": "...", "refresh_token": "...", "expires_in": 3600 }
+    """
+    auth_header = request.headers.get('Authorization')
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return jsonify({"error": "Unauthorized"}), 401
+    
+    token = auth_header.split(' ')[1]
+    try:
+        payload = decode_token(token)
+        user_id = payload['user_id']
+    except:
+        return jsonify({"error": "Invalid session"}), 401
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No token data provided"}), 400
+
+    access_token = data.get('access_token')
+    refresh_token = data.get('refresh_token') # May be null if already linked
+    expires_in = data.get('expires_in', 3600)
+
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    user.google_access_token = access_token
+    if refresh_token:
+        user.google_refresh_token = refresh_token
+    user.google_token_expiry = datetime.utcnow() + timedelta(seconds=expires_in)
+    
+    db.session.commit()
+    return jsonify({"message": "Google services linked successfully"}), 200

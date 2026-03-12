@@ -20,3 +20,7 @@ gunicorn
 icalendar
 joblib
 python-docx
+pandas
+scikit-learn
+sentence-transformers
+chromadb

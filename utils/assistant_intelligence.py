@@ -35,12 +35,12 @@ def ai_structured_chat(prompt, default_response):
     import time
     try:
         config = {"response_mime_type": "application/json", "max_output_tokens": 900}
-        raw = ai_service.generate_content(prompt, model="gemini-2.5-flash", config=config)
+        raw = ai_service.generate_content(prompt, model="gemini-1.5-flash", config=config)
         
         # If rate-limited, wait briefly and retry once
         if not raw:
             time.sleep(3)
-            raw = ai_service.generate_content(prompt, model="gemini-2.5-flash", config=config)
+            raw = ai_service.generate_content(prompt, model="gemini-1.5-flash", config=config)
         
         if not raw:
             return normalize_chat_payload({}, default_response)

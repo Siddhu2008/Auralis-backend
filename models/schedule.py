@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from models.user_settings import get_or_create_user_settings, is_valid_timezone
 from models.user_preference import get_preferences
 from zoneinfo import ZoneInfo
+from services.ml.habit_cluster import habit_engine
 
 class Schedule(db.Model):
     __tablename__ = 'schedules'
@@ -100,7 +101,16 @@ def create_schedule(user_id, title, start_time, participants=None, duration_minu
             item_duration = item.duration_minutes or settings.default_meeting_duration or 30
             item_end = item_start_utc.timestamp() + ((item_duration + buffer_minutes) * 60)
             if new_start.timestamp() < item_end and new_end > item_start_utc.timestamp():
-                raise ValueError("Schedule conflicts with another meeting considering buffer time.")
+                # Conflict detected! Suggest intelligent alternatives using Digital Twin ML
+                optimal_hours = habit_engine.predict_optimal_meeting_times(user_id)
+                # Format optimal hours for suggestion
+                suggestions = []
+                for hour in optimal_hours:
+                    h_str = f"{hour}:00" if hour >= 10 else f"0{hour}:00"
+                    suggestions.append(h_str)
+                
+                sugg_str = ", ".join(suggestions)
+                raise ValueError(f"You already have a meeting at this time. Suggested free slots based on your habits: {sugg_str}")
 
     schedule = Schedule(
         user_id=user_id,

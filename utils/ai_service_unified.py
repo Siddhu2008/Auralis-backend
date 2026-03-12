@@ -185,7 +185,7 @@ class AIService:
 
         # BUG-009 FIX: Try multiple models in order of preference/availability
         gemini_models = [
-            'gemini-2.5-flash',
+            'gemini-1.5-flash-8b',
             'gemini-2.0-flash',
             'gemini-1.5-flash',
             'gemini-1.5-pro',
@@ -212,6 +212,27 @@ class AIService:
                         break  # This key is exhausted, try next key
 
         return None
+
+
+    def get_proactive_insight(self, behavior_summary):
+        """Generates a proactive suggestion based on user behavior logs."""
+        prompt = f"""
+        You are 'Auralis AI', a proactive personal assistant.
+        Based on these recent user behavior logs:
+        {behavior_summary}
+        
+        Generate a concise, helpful, and premium proactive suggestion for the user.
+        Example: "You have a gap in your schedule, would you like me to find a slot for your 1:1?"
+        Example: "You usually check meeting reports around this time. Shall I prepare a summary of your last meeting?"
+        
+        STRICT RULES:
+        1. Keep it under 2 lines.
+        2. Sound intelligent and helpful.
+        3. Do NOT mention you are an AI.
+        
+        Insight:
+        """
+        return self.generate_content(prompt, model='gemini-1.5-flash')
 
 
 ai_service = AIService()

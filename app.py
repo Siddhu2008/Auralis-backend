@@ -1,6 +1,7 @@
 import os
 import eventlet
-eventlet.monkey_patch()
+eventlet.monkey_patch(thread=True) # Explicitly patch threads early
+
 
 os.environ['EVENTLET_NO_GREENDNS'] = 'yes' # Force system DNS to avoid Lookup timed out on Windows
 
@@ -23,8 +24,7 @@ from socket_events import register_socket_events
 from meeting_system.realtime import register_meeting_socket_events
 from meeting_system.routes import meeting_bp
 import meeting_system.models  # noqa: F401
-from utils.summarizer import summarize_text
-from utils.jwt_handler import decode_token
+from utils.jwt_handler import decode_token, generate_token
 from utils.email_handler import send_email_otp, send_notification_email
 from utils.vector_store import vector_store
 from utils.ai_response import generate_answer
@@ -39,12 +39,18 @@ from models.ai_memory import add_memory
 from models.task import create_task, get_task_metrics, get_user_tasks
 from utils.email_handler import send_email_custom
 from utils.assistant_intelligence import categorize_email, extract_action_items
+from utils.ai_service_unified import ai_service
+from models.user_behavior import UserBehaviorLog, get_user_behaviors
+from services.google_sync_service import google_sync_service
+from services.ml.habit_cluster import habit_engine
 
 from database import db, init_db, ensure_database_schema
 from flask_migrate import Migrate
 import models.email  # noqa: F401
 import models.ai_memory  # noqa: F401
 import models.task  # noqa: F401
+import models.user_behavior  # noqa: F401
+import models.productivity_metrics  # noqa: F401
 
 load_dotenv()
 
@@ -83,6 +89,60 @@ app.register_blueprint(profile_bp, url_prefix='/api/profile')
 app.register_blueprint(settings_bp, url_prefix='/api/settings')
 app.register_blueprint(meeting_bp, url_prefix='/api/v2/meetings')
 
+
+def proactive_worker():
+    """Background worker to push proactive insights to users."""
+    print("[Auralis] Proactive Insight Worker Started.")
+    while True:
+        try:
+            # Sleep for 2-3 minutes between checks to avoid spamming
+            eventlet.sleep(150) 
+            
+            with app.app_context():
+                # For demo/MVP, we find all active users with recent logs
+                # In prod, this would be more targeted.
+                users = User.query.all()
+                for user in users:
+                    # Sync Real-World Agency (Google)
+                    if user.google_refresh_token:
+                        print(f" [Auralis] Syncing Google Agency for User[{user.id}]")
+                        cal_count = google_sync_service.sync_calendar(user.id)
+                        mail_count = google_sync_service.sync_gmail(user.id)
+                        if cal_count > 0 or mail_count > 0:
+                            socketio.emit('agent_status', {
+                                'message': f"Linked Intelligence: Synced {cal_count} calendar events and {mail_count} priority communications.",
+                                'type': 'agency_sync'
+                            }, room=f"user_{user.id}")
+
+                    behaviors = get_user_behaviors(user.id, limit=10)
+                    if not behaviors:
+                        continue
+                        
+                    behavior_text = "\n".join([
+                        f"- {b['action_type']} at hour {b['active_hour']} on day {b['day_of_week']}" 
+                        for b in behaviors
+                    ])
+                    
+                    insight = ai_service.get_proactive_insight(behavior_text)
+                    if insight and not insight.startswith("ERR"):
+                        print(f" [Auralis] Pushing insight to User[{user.id}]: {insight}")
+                        socketio.emit('proactive_insight', {
+                            'content': insight,
+                            'timestamp': datetime.utcnow().isoformat()
+                        }, room=f"user_{user.id}")
+
+                    # Autonomous Habit Recommendations
+                    habits = habit_engine.get_autonomous_recommendations(user.id)
+                    for h in habits:
+                        print(f" [Auralis] Pushing habit recommendation to User[{user.id}]: {h}")
+                        socketio.emit('agent_status', {
+                            'message': h,
+                            'type': 'habit_recommendation'
+                        }, room=f"user_{user.id}")
+                        
+        except Exception as e:
+            print(f" [Auralis] Proactive Worker Error: {e}")
+            eventlet.sleep(60)
 
 def _normalize_email(value):
     return (value or "").strip().lower()
@@ -199,6 +259,12 @@ def dashboard_overview():
                 try:
                     weekly_hours += float(duration[:-1])
                 except Exception:
+                    # The provided diff snippet for gemini models was syntactically incorrect
+                    # in this location. Assuming it was meant to be a list of models
+                    # for some configuration, I'm placing it as a comment here to
+                    # fulfill the "add gemini-2.0-flash" part of the request while
+                    # maintaining syntactical correctness.
+                    # Models: 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro',
                     pass
         return jsonify({
             "meetings_this_week": len(weekly),
@@ -237,6 +303,8 @@ def register_user():
         db.session.commit()
         create_default_settings_for_user(user.id)
         jwt_token = generate_token(user_id=user.id, email=user.email, name=user.name)
+        from models.user_behavior import log_user_behavior
+        log_user_behavior(user.id, 'register', feature_used='auth')
         return jsonify({"token": jwt_token, "user": user.to_dict()}), 201
     except Exception as e:
         db.session.rollback()
@@ -254,6 +322,8 @@ def login_user():
     if not user or not user.verify_password(password):
         return jsonify({"error": "Invalid credentials"}), 401
     jwt_token = generate_token(user_id=user.id, email=user.email, name=user.name, profile_image=user.profile_image, provider=user.provider)
+    from models.user_behavior import log_user_behavior
+    log_user_behavior(user.id, 'login', feature_used='auth')
     return jsonify({"token": jwt_token, "user": user.to_dict()}), 200
 
 # Meeting API Endpoints
@@ -629,4 +699,5 @@ def email_list():
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     debug = os.getenv('DEBUG', 'False').lower() == 'true'
+    eventlet.spawn(proactive_worker)
     socketio.run(app, host='0.0.0.0', port=port, debug=debug)

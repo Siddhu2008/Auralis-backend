@@ -14,6 +14,7 @@ from datetime import datetime
 from meeting_agent_bp import is_agent_active, feed_transcript_to_agent, finalize_agent_meeting
 from utils.meeting_agent import generate_agent_response
 from utils.tts_handler import text_to_speech_base64
+from models.user_behavior import log_user_behavior
 
 # Room User Details: room_user_details[room_id][sid] = {'name': 'John Doe', ...}
 room_user_details = {}
@@ -128,6 +129,9 @@ def register_socket_events(socketio):
         room = data.get('room', '').strip().lower() # Case-insensitive normalization
         user_name = data.get('user_name', 'Guest')
         user_id = data.get('user_id')
+        
+        if user_id:
+            log_user_behavior(user_id, 'meeting_join', feature_used='meeting')
 
         if not room: return
 
