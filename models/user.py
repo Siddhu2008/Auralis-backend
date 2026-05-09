@@ -11,22 +11,18 @@ class User(db.Model):
     google_id = db.Column(db.String(100), unique=True, nullable=True)
     profile_image = db.Column(db.String(500), nullable=True)
     password_hash = db.Column(db.String(255), nullable=True)
-    phone = db.Column(db.String(20), nullable=True)
-    bio = db.Column(db.Text, nullable=True)
     provider = db.Column(db.String(20), default='email') # 'email' or 'google'
     role = db.Column(db.String(20), default='user')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
-    # Google API Credentials (Agency Phase)
-    google_access_token = db.Column(db.String(500), nullable=True)
-    google_refresh_token = db.Column(db.String(500), nullable=True)
-    google_token_expiry = db.Column(db.DateTime, nullable=True)
-    
     # Relationships
-    # Use backref with unique names or avoid collisions
-    meetings = db.relationship('Meeting', backref='host_user', lazy=True)
-    schedules = db.relationship('Schedule', backref='owner_user', lazy=True)
-    notifications = db.relationship('Notification', backref='target_user', lazy=True)
+    # Try both possible Meeting class locations for compatibility
+    try:
+        meetings = db.relationship('meeting_system.models.Meeting', backref='host', lazy=True)
+    except Exception:
+        meetings = db.relationship('models.meeting.Meeting', backref='host', lazy=True)
+    schedules = db.relationship('Schedule', backref='user', lazy=True)
+    notifications = db.relationship('Notification', backref='user', lazy=True)
 
     def to_dict(self):
         return {
@@ -35,8 +31,6 @@ class User(db.Model):
             'name': self.name,
             'google_id': self.google_id,
             'profile_image': self.profile_image,
-            'phone': self.phone,
-            'bio': self.bio,
             'provider': self.provider,
             'role': self.role,
             'created_at': self.created_at.isoformat()

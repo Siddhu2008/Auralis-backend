@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from database import db
 from meeting_system.models import (
-    MeetingV2,
+    Meeting,
     MeetingActionItem,
     MeetingChatMessage,
     MeetingDecision,
@@ -30,7 +30,7 @@ def _utc_now():
 def generate_unique_meeting_code(length=8):
     for _ in range(20):
         code = "".join(random.choice(MEETING_CODE_ALPHABET) for _ in range(length))
-        if not MeetingV2.query.filter_by(meeting_code=code).first():
+        if not Meeting.query.filter_by(meeting_code=code).first():
             return code
     raise RuntimeError("Could not generate a unique meeting code")
 
@@ -54,23 +54,21 @@ def validate_schedule_window(start_at, duration_minutes, buffer_minutes=10):
 
 def ensure_no_schedule_conflict(host_user_id, start_at, end_at, buffer_td):
     existing = (
-        MeetingV2.query.filter(
-            MeetingV2.user_id == host_user_id,
-            MeetingV2.status.in_(["scheduled", "live"]),
-            MeetingV2.scheduled_start_at.isnot(None),
-            MeetingV2.scheduled_end_at.isnot(None),
+        Meeting.query.filter(
+            Meeting.user_id == host_user_id,
+            Meeting.status.in_(["scheduled", "live"]),
+            Meeting.scheduled_start_at.isnot(None),
+            Meeting.scheduled_end_at.isnot(None),
         )
-        .order_by(MeetingV2.scheduled_start_at.asc())
+        .order_by(Meeting.scheduled_start_at.asc())
         .all()
     )
 
-    # Convert inputs to naive UTC datetimes to match SQLAlchemy DB columns
-    new_start = start_at.replace(tzinfo=None) - buffer_td
-    new_end = end_at.replace(tzinfo=None) + buffer_td
-    
+    new_start = start_at - buffer_td
+    new_end = end_at + buffer_td
     for item in existing:
         if item.scheduled_start_at <= new_end and item.scheduled_end_at >= new_start:
-            raise ValueError(f"Meeting conflicts with an existing schedule ({item.title or 'Untitled'}).")
+            raise ValueError("Meeting conflicts with an existing schedule.")
 
 
 def create_scheduled_meeting(
@@ -83,18 +81,14 @@ def create_scheduled_meeting(
     waiting_room_enabled=True,
     allow_participant_screen_share=True,
     frontend_base_url=None,
-    skip_conflict_check=False,
 ):
     meeting_code = generate_unique_meeting_code()
     meeting_link = build_meeting_link(frontend_base_url, meeting_code)
     end_at, buffer_td = validate_schedule_window(scheduled_start_at, duration_minutes)
-    
-    if not skip_conflict_check:
-        ensure_no_schedule_conflict(host_user_id, scheduled_start_at, end_at, buffer_td)
+    ensure_no_schedule_conflict(host_user_id, scheduled_start_at, end_at, buffer_td)
 
-    meeting = MeetingV2(
+    meeting = Meeting(
         user_id=host_user_id,
-        room_id=meeting_code,
         title=title,
         meeting_code=meeting_code,
         meeting_link=meeting_link,
@@ -134,16 +128,6 @@ def create_scheduled_meeting(
 
     db.session.add(MeetingSummary(meeting_id=meeting.id))
     db.session.commit()
-
-    # Centralized Notification
-    try:
-        from models.notification import create_notification
-        from models.user_settings import get_or_create_user_settings
-        settings = get_or_create_user_settings(host_user_id)
-        if settings and settings.notifications_enabled:
-            create_notification(host_user_id, f"Meeting scheduled: {title}", type='schedule')
-    except Exception as e:
-        print(f"[create_scheduled_meeting] Notification Error: {e}")
 
     if attendee_emails:
         for email in attendee_emails:
@@ -224,7 +208,7 @@ def attach_recording(meeting_id, recording_url, storage_key=None, provider="s3",
 
 
 def complete_meeting(meeting_id, final_summary, tone=None, action_items=None, decisions=None):
-    meeting = MeetingV2.query.get(meeting_id)
+    meeting = Meeting.query.get(meeting_id)
     if not meeting:
         raise ValueError("Meeting not found.")
 
@@ -272,10 +256,10 @@ def _parse_iso_datetime(raw):
 def find_meeting_by_code_or_id(code_or_id):
     meeting = None
     if str(code_or_id).isdigit():
-        meeting = MeetingV2.query.get(int(code_or_id))
+        meeting = Meeting.query.get(int(code_or_id))
     if meeting:
         return meeting
-    return MeetingV2.query.filter_by(meeting_code=str(code_or_id).upper()).first()
+    return Meeting.query.filter_by(meeting_code=str(code_or_id).upper()).first()
 
 
 def serialize_meeting_bundle(meeting):
@@ -304,23 +288,18 @@ def serialize_meeting_bundle(meeting):
             "id": meeting.id,
             "title": meeting.title,
             "meeting_code": meeting.meeting_code,
-            "room_id": meeting.room_id,
             "meeting_link": meeting.meeting_link,
             "host_user_id": meeting.user_id,
-            "scheduled_start_at": meeting.scheduled_start_at.isoformat() + "Z" if meeting.scheduled_start_at else None,
-            "scheduled_end_at": meeting.scheduled_end_at.isoformat() + "Z" if meeting.scheduled_end_at else None,
-            "duration_minutes": int((meeting.scheduled_end_at - meeting.scheduled_start_at).total_seconds() // 60) if (meeting.scheduled_start_at and meeting.scheduled_end_at) else 30,
-            "started_at": meeting.started_at.isoformat() + "Z" if meeting.started_at else None,
-            "ended_at": meeting.ended_at.isoformat() + "Z" if meeting.ended_at else None,
+            "scheduled_start_at": meeting.scheduled_start_at.isoformat() if meeting.scheduled_start_at else None,
+            "scheduled_end_at": meeting.scheduled_end_at.isoformat() if meeting.scheduled_end_at else None,
+            "started_at": meeting.started_at.isoformat() if meeting.started_at else None,
+            "ended_at": meeting.ended_at.isoformat() if meeting.ended_at else None,
             "duration_seconds": duration_seconds,
             "status": meeting.status,
             "is_locked": meeting.is_locked,
             "waiting_room_enabled": meeting.waiting_room_enabled,
             "allow_participant_screen_share": meeting.allow_participant_screen_share,
             "enable_ai_proxy": meeting.enable_ai_proxy,
-            "agent_report": meeting.agent_report,
-            "qa_pairs": meeting.qa_pairs or [],
-            "reminder_sent": meeting.reminder_sent,
         },
         "participants": [
             {
@@ -378,9 +357,9 @@ def get_reminder_targets(minutes_from_now=15):
     target_start = _utc_now() + timedelta(minutes=minutes_from_now)
     window_end = target_start + timedelta(minutes=1)
 
-    upcoming = MeetingV2.query.filter(
-        MeetingV2.status == "scheduled",
-        MeetingV2.scheduled_start_at >= target_start,
-        MeetingV2.scheduled_start_at < window_end,
+    upcoming = Meeting.query.filter(
+        Meeting.status == "scheduled",
+        Meeting.scheduled_start_at >= target_start,
+        Meeting.scheduled_start_at < window_end,
     ).all()
     return upcoming

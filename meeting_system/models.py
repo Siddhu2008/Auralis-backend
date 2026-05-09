@@ -2,13 +2,12 @@ from datetime import datetime
 from database import db
 
 
-class MeetingV2(db.Model):
+class Meeting(db.Model):
     __tablename__ = "meetings"
     __table_args__ = {"extend_existing": True}
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
-    room_id = db.Column(db.String(50), nullable=False)
     title = db.Column(db.String(255), nullable=True)
     meeting_code = db.Column(db.String(12), nullable=True, unique=True, index=True)
     meeting_link = db.Column(db.String(500), nullable=True, unique=True)
@@ -21,9 +20,6 @@ class MeetingV2(db.Model):
     allow_participant_screen_share = db.Column(db.Boolean, default=True, nullable=False)
     enable_ai_proxy = db.Column(db.Boolean, default=False, nullable=False)
     status = db.Column(db.String(20), default="scheduled", nullable=False, index=True)
-    agent_report = db.Column(db.Text, nullable=True)
-    qa_pairs = db.Column(db.JSON, default=list)
-    reminder_sent = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
